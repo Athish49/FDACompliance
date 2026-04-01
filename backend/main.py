@@ -1,17 +1,18 @@
 """
 FDA Compliance AI — Root API Server
 =====================================
-FastAPI application that exposes ingestion pipeline and search endpoints.
+FastAPI application that exposes ingestion pipeline, search, and query endpoints.
 
 Endpoints:
   POST /api/ingest          — trigger the full ingestion pipeline
   GET  /api/ingest/status   — check last pipeline run status
   POST /api/search          — hybrid search over CFR chunks
   GET  /api/chunks/{id}     — fetch a single chunk by ID
+  POST /api/query           — multi-agent compliance reasoning
   GET  /health              — liveness probe
 
 Run with:
-  uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
+  uvicorn main:app --reload --host 0.0.0.0 --port 8000
 """
 
 from __future__ import annotations
@@ -25,7 +26,7 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from backend.ingestion.pipeline import (
+from ingestion.pipeline import (
     EmbedderConfig,
     PipelineConfig,
     PipelineResult,
@@ -51,7 +52,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(
     title="FDA Compliance AI",
     description="Regulatory intelligence API powered by CFR data",
-    version="0.2.0",
+    version="0.3.0",
 )
 
 app.add_middleware(
@@ -80,7 +81,7 @@ _retriever = None
 def _get_retriever():
     global _retriever
     if _retriever is None:
-        from backend.retrieval.retriever import CFRRetriever
+        from retrieval.retriever import CFRRetriever
         _retriever = CFRRetriever()
     return _retriever
 
@@ -272,7 +273,7 @@ def search(request: SearchRequest):
     Performs BGE-M3 dense + sparse search, fuses with RRF,
     and optionally reranks with bge-reranker-v2-m3.
     """
-    from backend.retrieval.retriever import SearchFilters
+    from retrieval.retriever import SearchFilters
 
     retriever = _get_retriever()
 
@@ -312,6 +313,54 @@ def search(request: SearchRequest):
             for r in results
         ],
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Request / response models — Query (multi-agent reasoning)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class QueryRequest(BaseModel):
+    question: str = Field(..., min_length=5, description="Natural language compliance question")
+
+
+class QueryResponse(BaseModel):
+    answer: str
+    citations: list[dict] = []
+    confidence_score: float = 0.0
+    conflicts_detected: bool = False
+    conflict_details: list[dict] = []
+    disclaimer: str = ""
+    retrieved_sections: list[str] = []
+    verification_passed: bool = False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Endpoints — Query (multi-agent reasoning)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.post("/api/query", response_model=QueryResponse, tags=["query"])
+def query_compliance(request: QueryRequest):
+    """
+    Multi-agent compliance reasoning pipeline.
+
+    Takes a natural language question, retrieves relevant CFR sections,
+    resolves definitions, synthesizes a grounded answer with citations,
+    verifies claims, and detects cross-section conflicts.
+    """
+    from agents.graph import query_graph
+
+    try:
+        result = query_graph.invoke({"query": request.question, "retry_count": 0})
+    except Exception as exc:
+        logger.exception("Query pipeline failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Query pipeline error: {exc}")
+
+    final = result.get("final_response")
+    if not final:
+        error = result.get("error", "Unknown error in query pipeline")
+        raise HTTPException(status_code=500, detail=error)
+
+    return QueryResponse(**final)
 
 
 @app.get("/api/chunks/{chunk_id}", tags=["search"])

@@ -12,6 +12,11 @@ qdrant-client>=1.9.0
 # ─── Graph database (optional — not required for hybrid search pipeline) ─────
 # neo4j>=5.0.0
 
+# ─── Multi-agent reasoning (LangGraph + LiteLLM) ────────────────────────────
+langgraph>=0.2.0
+langchain-core>=0.3.0
+litellm>=1.40.0
+
 # ─── Utilities ────────────────────────────────────────────────────────────────
 tqdm>=4.0.0
 python-dotenv>=1.0.0

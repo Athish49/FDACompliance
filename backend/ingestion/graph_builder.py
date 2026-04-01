@@ -457,7 +457,7 @@ class CFRGraphBuilder:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def build_graph(
-    chunks_path: str | Path = "backend/data/chunks/cfr_chunks.json",
+    chunks_path: str | Path = "data/chunks/cfr_chunks.json",
     config: Optional[GraphConfig] = None,
 ) -> dict:
     """

@@ -247,7 +247,7 @@ def _build_payload(chunk: dict) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def embed_and_store(
-    chunks_path: str | Path = "backend/data/chunks/cfr_chunks.json",
+    chunks_path: str | Path = "data/chunks/cfr_chunks.json",
     config: Optional[EmbedderConfig] = None,
 ) -> dict:
     """

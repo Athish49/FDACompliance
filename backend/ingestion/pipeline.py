@@ -36,8 +36,8 @@ logger = logging.getLogger(__name__)
 @dataclass
 class PipelineConfig:
     # Paths
-    xml_dir: str            = "backend/data/cfr_xml"
-    chunks_output_path: str = "backend/data/chunks/cfr_chunks.json"
+    xml_dir: str            = "data/cfr_xml"
+    chunks_output_path: str = "data/chunks/cfr_chunks.json"
 
     # Which steps to run
     run_extract: bool = True
