@@ -21,11 +21,10 @@ import time
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from .extractor import extract_all
 from .embedder import EmbedderConfig, embed_and_store
-from .graph_builder import GraphConfig, build_graph
 
 logger = logging.getLogger(__name__)
 
@@ -43,14 +42,14 @@ class PipelineConfig:
     # Which steps to run
     run_extract: bool = True
     run_embed:   bool = True
-    run_graph:   bool = True
+    run_graph:   bool = False
 
     # Skip extraction if output file already exists (resume mode)
     skip_extract_if_exists: bool = False
 
     # Sub-configs (use defaults if not provided)
     embedder_config: Optional[EmbedderConfig] = None
-    graph_config:    Optional[GraphConfig]    = None
+    graph_config:    Optional[Any]             = None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -216,6 +215,8 @@ def run_pipeline(config: Optional[PipelineConfig] = None) -> PipelineResult:
         graph_step.status = StepStatus.RUNNING
         step_start = time.time()
         try:
+            from .graph_builder import build_graph
+
             logger.info("[GRAPH] Starting Neo4j graph build …")
             graph_result = build_graph(
                 chunks_path=config.chunks_output_path,

@@ -1,15 +1,17 @@
 """
 FDA Compliance AI — Root API Server
 =====================================
-FastAPI application that exposes ingestion pipeline endpoints.
+FastAPI application that exposes ingestion pipeline and search endpoints.
 
 Endpoints:
   POST /api/ingest          — trigger the full ingestion pipeline
   GET  /api/ingest/status   — check last pipeline run status
+  POST /api/search          — hybrid search over CFR chunks
+  GET  /api/chunks/{id}     — fetch a single chunk by ID
   GET  /health              — liveness probe
 
 Run with:
-  uvicorn main:app --reload --host 0.0.0.0 --port 8000
+  uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
 """
 
 from __future__ import annotations
@@ -25,7 +27,6 @@ from pydantic import BaseModel, Field
 
 from backend.ingestion.pipeline import (
     EmbedderConfig,
-    GraphConfig,
     PipelineConfig,
     PipelineResult,
     StepStatus,
@@ -50,7 +51,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(
     title="FDA Compliance AI",
     description="Regulatory intelligence API powered by CFR data",
-    version="0.1.0",
+    version="0.2.0",
 )
 
 app.add_middleware(
@@ -70,40 +71,81 @@ _last_result: Optional[dict] = None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Request / response models
+# Retriever singleton (lazy-initialised on first search)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_retriever = None
+
+
+def _get_retriever():
+    global _retriever
+    if _retriever is None:
+        from backend.retrieval.retriever import CFRRetriever
+        _retriever = CFRRetriever()
+    return _retriever
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Request / response models — Ingestion
 # ─────────────────────────────────────────────────────────────────────────────
 
 class IngestRequest(BaseModel):
     """Options for a pipeline run. All fields are optional — defaults are used if omitted."""
 
-    # Which steps to run
     run_extract: bool = Field(True,  description="Run the XML extraction step")
     run_embed:   bool = Field(True,  description="Run the Qdrant embedding step")
-    run_graph:   bool = Field(True,  description="Run the Neo4j graph building step")
+    run_graph:   bool = Field(False, description="Run the Neo4j graph building step")
 
-    # Skip extraction if the chunks file already exists
     skip_extract_if_exists: bool = Field(
         False,
         description="Skip extraction if cfr_chunks.json already exists (resume mode)",
     )
 
-    # Qdrant settings
     qdrant_url: str = Field("http://localhost:6333", description="Qdrant server URL")
     qdrant_collection: str = Field("cfr_chunks", description="Qdrant collection name")
-    embedding_backend: str = Field(
-        "sentence-transformers",
-        description="Embedding backend: 'sentence-transformers' or 'openai'",
-    )
-
-    # Neo4j settings
-    neo4j_uri: str      = Field("bolt://localhost:7687", description="Neo4j bolt URI")
-    neo4j_user: str     = Field("neo4j",    description="Neo4j username")
-    neo4j_password: str = Field("password", description="Neo4j password")
 
 
 class IngestResponse(BaseModel):
     message: str
     run_id: Optional[str] = None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Request / response models — Search
+# ─────────────────────────────────────────────────────────────────────────────
+
+class SearchRequest(BaseModel):
+    query: str = Field(..., description="Natural language search query")
+    top_k: int = Field(10, ge=1, le=100, description="Number of results to return")
+    use_reranker: bool = Field(True, description="Apply cross-encoder reranking")
+
+    # Optional filters
+    part_number: Optional[str] = Field(None, description="Filter by CFR part number")
+    chapter_number: Optional[str] = Field(None, description="Filter by chapter number")
+    subpart_letter: Optional[str] = Field(None, description="Filter by subpart letter")
+    section_number: Optional[str] = Field(None, description="Filter by section number")
+    chunk_type: Optional[str] = Field(None, description="Filter by chunk type (section/paragraph/definition)")
+    source_file: Optional[str] = Field(None, description="Filter by source XML file")
+
+
+class SearchResultItem(BaseModel):
+    chunk_id: str
+    score: float
+    reranker_score: Optional[float] = None
+    text: str
+    cfr_citation: Optional[str] = None
+    chunk_type: Optional[str] = None
+    section_preamble: Optional[str] = None
+    hierarchy: dict = {}
+    defines: Optional[str] = None
+    overflow_chunks: list[dict] = []
+    metadata: dict = {}
+
+
+class SearchResponse(BaseModel):
+    query: str
+    total_results: int
+    results: list[SearchResultItem]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -127,7 +169,7 @@ def _run_pipeline_background(config: PipelineConfig) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Endpoints
+# Endpoints — System
 # ─────────────────────────────────────────────────────────────────────────────
 
 @app.get("/health", tags=["system"])
@@ -135,6 +177,10 @@ def health():
     """Liveness probe."""
     return {"status": "ok", "timestamp": datetime.now(timezone.utc).isoformat()}
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Endpoints — Ingestion
+# ─────────────────────────────────────────────────────────────────────────────
 
 @app.post("/api/ingest", response_model=IngestResponse, tags=["ingestion"])
 def trigger_ingest(
@@ -168,12 +214,6 @@ def trigger_ingest(
         embedder_config=EmbedderConfig(
             qdrant_url=request.qdrant_url,
             collection_name=request.qdrant_collection,
-            embedding_backend=request.embedding_backend,
-        ),
-        graph_config=GraphConfig(
-            neo4j_uri=request.neo4j_uri,
-            neo4j_user=request.neo4j_user,
-            neo4j_password=request.neo4j_password,
         ),
     )
 
@@ -218,3 +258,67 @@ def trigger_extract_only(background_tasks: BackgroundTasks):
     config = PipelineConfig(run_extract=True, run_embed=False, run_graph=False)
     background_tasks.add_task(_run_pipeline_background, config)
     return {"message": "Extraction step started."}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Endpoints — Search
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.post("/api/search", response_model=SearchResponse, tags=["search"])
+def search(request: SearchRequest):
+    """
+    Hybrid search over CFR chunks.
+
+    Performs BGE-M3 dense + sparse search, fuses with RRF,
+    and optionally reranks with bge-reranker-v2-m3.
+    """
+    from backend.retrieval.retriever import SearchFilters
+
+    retriever = _get_retriever()
+
+    filters = SearchFilters(
+        part_number=request.part_number,
+        chapter_number=request.chapter_number,
+        subpart_letter=request.subpart_letter,
+        section_number=request.section_number,
+        chunk_type=request.chunk_type,
+        source_file=request.source_file,
+    )
+
+    results = retriever.search(
+        query=request.query,
+        top_k=request.top_k,
+        use_reranker=request.use_reranker,
+        filters=filters,
+    )
+
+    return SearchResponse(
+        query=request.query,
+        total_results=len(results),
+        results=[
+            SearchResultItem(
+                chunk_id=r.chunk_id,
+                score=r.score,
+                reranker_score=r.reranker_score,
+                text=r.text,
+                cfr_citation=r.cfr_citation,
+                chunk_type=r.chunk_type,
+                section_preamble=r.section_preamble,
+                hierarchy=r.hierarchy,
+                defines=r.defines,
+                overflow_chunks=r.overflow_chunks,
+                metadata=r.metadata,
+            )
+            for r in results
+        ],
+    )
+
+
+@app.get("/api/chunks/{chunk_id}", tags=["search"])
+def get_chunk(chunk_id: str):
+    """Fetch a single chunk by its chunk_id."""
+    retriever = _get_retriever()
+    payload = retriever.get_chunk_by_id(chunk_id)
+    if payload is None:
+        raise HTTPException(status_code=404, detail=f"Chunk '{chunk_id}' not found")
+    return payload

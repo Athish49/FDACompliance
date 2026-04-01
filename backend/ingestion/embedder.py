@@ -1,20 +1,18 @@
 """
-CFR Chunk Embedder → Qdrant
-============================
-Reads the chunks JSON produced by extractor.py, generates dense embeddings
-for each chunk, and upserts them into a Qdrant collection.
+CFR Chunk Embedder → Qdrant (BGE-M3 Hybrid Dense + Sparse)
+============================================================
+Reads the chunks JSON produced by extractor.py, generates dense (1024-d)
+and sparse (lexical-weight) embeddings using BAAI/bge-m3, and upserts them
+into a single Qdrant collection with named vectors.
 
 Each Qdrant point stores:
   - id       : SHA-256 of chunk_id (UUID-compatible hex)
-  - vector   : embedding of the chunk text
-  - payload  : full chunk dict (all metadata fields for filtered retrieval)
+  - vectors  : {"dense": [...], "sparse": SparseVector(...)}
+  - payload  : flattened metadata + full text for filtered retrieval
 
-The payload intentionally mirrors the chunk schema so that downstream
-retrieval can filter by cfr_citation, part number, effective_date, etc.
-
-Dependencies (add to requirements.txt):
+Dependencies:
+  FlagEmbedding>=1.2.10
   qdrant-client>=1.9.0
-  sentence-transformers>=3.0.0   # or openai>=1.0.0 for OpenAI embeddings
   tqdm>=4.0.0
 """
 
@@ -24,9 +22,11 @@ import hashlib
 import json
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+
+from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
@@ -42,30 +42,16 @@ class EmbedderConfig:
     qdrant_api_key: Optional[str] = None
     collection_name: str = "cfr_chunks"
 
-    # Embedding model
-    # Use "sentence-transformers" or "openai"
-    embedding_backend: str = "sentence-transformers"
-    # Sentence-Transformers model (good balance of quality / speed for regulatory text)
-    st_model_name: str = "BAAI/bge-large-en-v1.5"
-    # OpenAI model (alternative — set embedding_backend = "openai")
-    openai_model_name: str = "text-embedding-3-large"
-    openai_api_key: Optional[str] = None
-
-    # Vector dimension — must match the chosen model:
-    #   BAAI/bge-large-en-v1.5  → 1024
-    #   text-embedding-3-large  → 3072
-    vector_size: int = 1024
+    # BGE-M3 model
+    model_name: str = "BAAI/bge-m3"
+    dense_dim: int = 1024
+    use_fp16: bool = True
 
     # Processing
-    batch_size: int = 64           # chunks per embedding batch
-    upsert_batch_size: int = 128   # points per Qdrant upsert call
+    batch_size: int = 32
 
     # Text construction
-    # When True, the section_preamble (if present) is prepended to chunk text
-    # before embedding so each vector is self-contained.
     prepend_preamble: bool = True
-
-
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -75,15 +61,14 @@ class EmbedderConfig:
 def _chunk_id_to_uuid(chunk_id: str) -> str:
     """Convert a string chunk_id to a UUID-like hex string via SHA-256."""
     digest = hashlib.sha256(chunk_id.encode()).hexdigest()
-    # Format as UUID: 8-4-4-4-12
     return f"{digest[:8]}-{digest[8:12]}-{digest[12:16]}-{digest[16:20]}-{digest[20:32]}"
 
 
 def _build_embed_text(chunk: dict, config: EmbedderConfig) -> str:
     """
     Construct the text string that will be embedded for a chunk.
-    Prepends hierarchy breadcrumb, section_preamble, and overlap tail
-    so each vector carries enough context to be self-sufficient.
+    Prepends hierarchy breadcrumb and section_preamble so each vector
+    carries enough context to be self-sufficient.
     """
     parts: list[str] = []
 
@@ -100,13 +85,11 @@ def _build_embed_text(chunk: dict, config: EmbedderConfig) -> str:
     if breadcrumb_parts:
         parts.append(" > ".join(breadcrumb_parts))
 
-    # Section preamble (govering condition for multi-paragraph sections)
+    # Section preamble (governing condition for multi-paragraph sections)
     if config.prepend_preamble:
         preamble = chunk.get("section_preamble") or ""
         if preamble:
             parts.append(preamble)
-
-
 
     # Main chunk text
     parts.append(chunk.get("text", ""))
@@ -126,42 +109,56 @@ def _batched(items: list, size: int):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Embedding backends
+# BGE-M3 model loading & encoding
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _load_st_model(model_name: str):
-    """Lazy-load a SentenceTransformer model."""
+_bgem3_model = None
+
+
+def _load_bgem3_model(config: EmbedderConfig):
+    """Lazy-load BGEM3FlagModel (cached across calls)."""
+    global _bgem3_model
+    if _bgem3_model is not None:
+        return _bgem3_model
     try:
-        from sentence_transformers import SentenceTransformer
+        from FlagEmbedding import BGEM3FlagModel
     except ImportError as exc:
         raise ImportError(
-            "sentence-transformers is required. Install with: pip install sentence-transformers"
+            "FlagEmbedding is required. Install with: pip install FlagEmbedding"
         ) from exc
-    logger.info("Loading SentenceTransformer model: %s", model_name)
-    return SentenceTransformer(model_name)
+    logger.info("Loading BGE-M3 model: %s (fp16=%s)", config.model_name, config.use_fp16)
+    _bgem3_model = BGEM3FlagModel(config.model_name, use_fp16=config.use_fp16)
+    return _bgem3_model
 
 
-def _embed_st(model, texts: list[str], config: EmbedderConfig) -> list[list[float]]:
-    """Embed a batch of texts using SentenceTransformer."""
-    vectors = model.encode(
+def _encode_batch(model, texts: list[str]) -> tuple[list[list[float]], list[dict]]:
+    """
+    Encode a batch of texts with BGE-M3.
+
+    Returns:
+        (dense_vectors, sparse_vectors)
+        - dense_vectors: list of 1024-d float lists
+        - sparse_vectors: list of {"indices": [...], "values": [...]} dicts
+    """
+    output = model.encode(
         texts,
-        batch_size=config.batch_size,
-        show_progress_bar=False,
-        normalize_embeddings=True,  # cosine similarity compatible
+        return_dense=True,
+        return_sparse=True,
+        return_colbert_vecs=False,
     )
-    return [v.tolist() for v in vectors]
 
+    dense_vecs = output["dense_vecs"]
+    lexical_weights = output["lexical_weights"]
 
-def _embed_openai(texts: list[str], config: EmbedderConfig) -> list[list[float]]:
-    """Embed texts using OpenAI embeddings API."""
-    try:
-        from openai import OpenAI
-    except ImportError as exc:
-        raise ImportError("openai package is required. Install with: pip install openai") from exc
+    dense_list = [vec.tolist() for vec in dense_vecs]
 
-    client = OpenAI(api_key=config.openai_api_key)
-    response = client.embeddings.create(input=texts, model=config.openai_model_name)
-    return [item.embedding for item in response.data]
+    sparse_list = []
+    for weights in lexical_weights:
+        indices = sorted(weights.keys())
+        values = [float(weights[idx]) for idx in indices]
+        sparse_list.append({"indices": [int(i) for i in indices], "values": values})
+
+    return dense_list, sparse_list
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -169,21 +166,80 @@ def _embed_openai(texts: list[str], config: EmbedderConfig) -> list[list[float]]
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _ensure_collection(client, config: EmbedderConfig) -> None:
-    """Create Qdrant collection if it does not already exist."""
-    try:
-        from qdrant_client.models import Distance, VectorParams
-    except ImportError as exc:
-        raise ImportError("qdrant-client is required. Install with: pip install qdrant-client") from exc
+    """Create Qdrant collection with named dense + sparse vectors if it doesn't exist."""
+    from qdrant_client.models import (
+        Distance,
+        PayloadSchemaType,
+        SparseVectorParams,
+        VectorParams,
+    )
 
     existing = [c.name for c in client.get_collections().collections]
-    if config.collection_name not in existing:
-        logger.info("Creating Qdrant collection '%s'", config.collection_name)
-        client.create_collection(
-            collection_name=config.collection_name,
-            vectors_config=VectorParams(size=config.vector_size, distance=Distance.COSINE),
-        )
-    else:
+    if config.collection_name in existing:
         logger.info("Using existing Qdrant collection '%s'", config.collection_name)
+        return
+
+    logger.info("Creating Qdrant collection '%s'", config.collection_name)
+    client.create_collection(
+        collection_name=config.collection_name,
+        vectors_config={
+            "dense": VectorParams(size=config.dense_dim, distance=Distance.COSINE),
+        },
+        sparse_vectors_config={
+            "sparse": SparseVectorParams(),
+        },
+    )
+
+    # Create payload indexes for filtered search
+    indexed_fields = {
+        "chunk_id": PayloadSchemaType.KEYWORD,
+        "part_number": PayloadSchemaType.KEYWORD,
+        "chapter_number": PayloadSchemaType.KEYWORD,
+        "chunk_type": PayloadSchemaType.KEYWORD,
+        "cfr_citation": PayloadSchemaType.TEXT,
+        "section_number": PayloadSchemaType.KEYWORD,
+        "defines": PayloadSchemaType.KEYWORD,
+        "is_overflow_chunk": PayloadSchemaType.BOOL,
+        "source_file": PayloadSchemaType.KEYWORD,
+    }
+    for field_name, schema_type in indexed_fields.items():
+        client.create_payload_index(
+            collection_name=config.collection_name,
+            field_name=field_name,
+            field_schema=schema_type,
+        )
+    logger.info("Created %d payload indexes", len(indexed_fields))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Payload builder
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _build_payload(chunk: dict) -> dict:
+    """Flatten chunk hierarchy into top-level fields for Qdrant filtering."""
+    h = chunk.get("hierarchy", {})
+    return {
+        # Flattened metadata for filtered search
+        "chunk_id": chunk["chunk_id"],
+        "chunk_type": chunk.get("chunk_type"),
+        "cfr_citation": chunk.get("cfr_citation"),
+        "title_number": (h.get("title") or {}).get("number"),
+        "chapter_number": (h.get("chapter") or {}).get("number"),
+        "part_number": (h.get("part") or {}).get("number"),
+        "subpart_letter": (h.get("subpart") or {}).get("letter"),
+        "section_number": (h.get("section") or {}).get("number"),
+        "source_file": chunk.get("source_file"),
+        "defines": chunk.get("defines"),
+        "is_overflow_chunk": chunk.get("is_overflow_chunk", False),
+        # Full text and context for retrieval
+        "text": chunk.get("text"),
+        "section_preamble": chunk.get("section_preamble"),
+        "cross_references_internal": chunk.get("cross_references_internal", []),
+        "hierarchy": h,
+        "paragraph_labels": chunk.get("paragraph_labels", []),
+        "metrics": chunk.get("metrics", []),
+        "overflow_sequence": chunk.get("overflow_sequence"),
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -195,15 +251,13 @@ def embed_and_store(
     config: Optional[EmbedderConfig] = None,
 ) -> dict:
     """
-    Load chunks from *chunks_path*, embed them, and upsert into Qdrant.
+    Load chunks from *chunks_path*, embed with BGE-M3 (dense + sparse),
+    and upsert into Qdrant.
 
     Returns a summary dict with keys: total_upserted, collection_name, duration_seconds.
     """
-    try:
-        from qdrant_client import QdrantClient
-        from qdrant_client.models import PointStruct
-    except ImportError as exc:
-        raise ImportError("qdrant-client is required. Install with: pip install qdrant-client") from exc
+    from qdrant_client import QdrantClient
+    from qdrant_client.models import PointStruct, SparseVector
 
     if config is None:
         config = EmbedderConfig()
@@ -215,58 +269,37 @@ def embed_and_store(
     client = QdrantClient(url=config.qdrant_url, api_key=config.qdrant_api_key)
     _ensure_collection(client, config)
 
-    # Load embedding model
-    model = None
-    if config.embedding_backend == "sentence-transformers":
-        model = _load_st_model(config.st_model_name)
+    # Load BGE-M3
+    model = _load_bgem3_model(config)
 
     start = time.time()
     total_upserted = 0
+    batches = list(_batched(chunks, config.batch_size))
 
-    for batch in _batched(chunks, config.batch_size):
+    for batch in tqdm(batches, desc="Embedding batches", unit="batch"):
         texts = [_build_embed_text(c, config) for c in batch]
 
-        # Generate embeddings
-        if config.embedding_backend == "sentence-transformers":
-            vectors = _embed_st(model, texts, config)
-        elif config.embedding_backend == "openai":
-            vectors = _embed_openai(texts, config)
-        else:
-            raise ValueError(f"Unknown embedding_backend: {config.embedding_backend!r}")
+        # Encode with BGE-M3 → dense + sparse
+        dense_vecs, sparse_vecs = _encode_batch(model, texts)
 
-        # Build Qdrant points — payload contains the full chunk dict
+        # Build Qdrant points with named vectors
         points = [
             PointStruct(
                 id=_chunk_id_to_uuid(chunk["chunk_id"]),
-                vector=vector,
-                payload={
-                    # Flattened metadata fields for Qdrant filtered search
-                    "chunk_id": chunk["chunk_id"],
-                    "chunk_type": chunk.get("chunk_type"),
-                    "cfr_citation": chunk.get("cfr_citation"),
-                    "title_number": chunk.get("hierarchy", {}).get("title", {}).get("number"),
-                    "chapter_number": chunk.get("hierarchy", {}).get("chapter", {}).get("number"),
-                    "part_number": (chunk.get("hierarchy", {}).get("part") or {}).get("number"),
-                    "subpart_letter": (chunk.get("hierarchy", {}).get("subpart") or {}).get("letter"),
-                    "section_number": (chunk.get("hierarchy", {}).get("section") or {}).get("number"),
-                    "source_file": chunk.get("source_file"),
-                    # Full chunk for retrieval context
-                    "text": chunk.get("text"),
-                    "section_preamble": chunk.get("section_preamble"),
-                    "defines": chunk.get("defines"),
-                    "cross_references_internal": chunk.get("cross_references_internal", []),
-                    "is_overflow_chunk": chunk.get("is_overflow_chunk", False),
+                vector={
+                    "dense": dense_vec,
+                    "sparse": SparseVector(
+                        indices=sparse_vec["indices"],
+                        values=sparse_vec["values"],
+                    ),
                 },
+                payload=_build_payload(chunk),
             )
-            for chunk, vector in zip(batch, vectors)
+            for chunk, dense_vec, sparse_vec in zip(batch, dense_vecs, sparse_vecs)
         ]
 
-        # Upsert to Qdrant in sub-batches
-        for upsert_batch in _batched(points, config.upsert_batch_size):
-            client.upsert(collection_name=config.collection_name, points=upsert_batch)
-            total_upserted += len(upsert_batch)
-
-        logger.debug("Upserted %d / %d", total_upserted, len(chunks))
+        client.upsert(collection_name=config.collection_name, points=points)
+        total_upserted += len(points)
 
     duration = round(time.time() - start, 2)
     logger.info(
