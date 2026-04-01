@@ -5,6 +5,7 @@ pydantic>=2.0.0
 
 # ─── Embedding / reranking (BGE-M3 hybrid dense+sparse) ─────────────────────
 FlagEmbedding>=1.2.10
+transformers<4.45.0
 
 # ─── Vector database ──────────────────────────────────────────────────────────
 qdrant-client>=1.9.0

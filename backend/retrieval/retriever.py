@@ -15,6 +15,22 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from typing import Optional
+import os
+
+# Prevent HuggingFace from repeatedly checking online for model updates 
+# (which causes those slow HTTP/1.1 HEAD/GET logs)
+os.environ["HF_HUB_OFFLINE"] = "1"
+
+# Monkey patch transformers to bypass FlagEmbedding's import errors on new transformers versions
+try:
+    import transformers.utils
+    import transformers.utils.import_utils
+    if not hasattr(transformers.utils, "is_flash_attn_greater_or_equal_2_10"):
+        transformers.utils.is_flash_attn_greater_or_equal_2_10 = lambda: False
+    if not hasattr(transformers.utils.import_utils, "is_torch_fx_available"):
+        transformers.utils.import_utils.is_torch_fx_available = lambda: False
+except ImportError:
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -111,13 +127,40 @@ class CFRRetriever:
 
     @property
     def reranker(self):
-        if self._reranker is None:
-            from FlagEmbedding import FlagReranker
-            logger.info("Loading reranker: %s", self.config.reranker_model)
-            self._reranker = FlagReranker(
-                self.config.reranker_model,
-                use_fp16=self.config.use_fp16,
-            )
+        if self._reranker is not None:
+            return self._reranker
+        logger.info("Loading reranker: %s", self.config.reranker_model)
+        
+        # We define a custom reranker wrapper here using straight transformers
+        # Because FlagReranker uses tokenizer.prepare_for_model which is removed in transformers 5x
+        import torch
+        from transformers import AutoModelForSequenceClassification, AutoTokenizer
+
+        class SafeTransformersReranker:
+            def __init__(self, model_name, use_fp16=True):
+                self.device = "mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu")
+                dtype = torch.float16 if use_fp16 and self.device != "cpu" else torch.float32
+                self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+                self.model = AutoModelForSequenceClassification.from_pretrained(
+                    model_name, torch_dtype=dtype
+                ).to(self.device)
+                self.model.eval()
+
+            def compute_score(self, sentence_pairs, normalize=True):
+                with torch.no_grad():
+                    inputs = self.tokenizer(
+                        sentence_pairs, 
+                        padding=True, 
+                        truncation=True, 
+                        return_tensors='pt', 
+                        max_length=512
+                    ).to(self.device)
+                    scores = self.model(**inputs, return_dict=True).logits.view(-1, ).float()
+                    if normalize:
+                        scores = torch.sigmoid(scores)
+                    return scores.cpu().tolist()
+
+        self._reranker = SafeTransformersReranker(self.config.reranker_model, use_fp16=True)
         return self._reranker
 
     # ── Query encoding ────────────────────────────────────────────────────

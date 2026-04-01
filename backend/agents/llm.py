@@ -12,9 +12,20 @@ logger = logging.getLogger(__name__)
 
 # ── Model configuration (override via env vars) ──────────────────────────
 
-PRIMARY_MODEL = os.getenv("PRIMARY_MODEL", "ollama/llama3.1:8b")
-FALLBACK_MODEL_1 = os.getenv("FALLBACK_MODEL_1", "groq/llama-3.1-70b-versatile")
-FALLBACK_MODEL_2 = os.getenv("FALLBACK_MODEL_2", "openai/gpt-4o")
+# Choose your active AI provider here. 
+# Options: "ollama", "openai", "anthropic", "groq", "gemini"
+ACTIVE_PROVIDER = os.getenv("ACTIVE_PROVIDER", "ollama")
+
+# Define the default model for each provider
+PROVIDER_MODELS = {
+    "ollama": "ollama/llama3.2",
+    "openai": "openai/gpt-4o",
+    "anthropic": "anthropic/claude-3-5-sonnet-latest",
+    "groq": "groq/llama-3.1-70b-versatile",
+    "gemini": "gemini/gemini-1.5-pro",
+}
+
+PRIMARY_MODEL = os.getenv("PRIMARY_MODEL", PROVIDER_MODELS.get(ACTIVE_PROVIDER, "ollama/llama3.2"))
 OLLAMA_API_BASE = os.getenv("OLLAMA_API_BASE", "http://localhost:11434")
 
 # Suppress litellm's verbose logging
@@ -34,7 +45,7 @@ def llm_completion(
     temperature: float = 0.1,
 ) -> str:
     """Call LLM with automatic fallback. Returns the response text."""
-    models = [PRIMARY_MODEL, FALLBACK_MODEL_1, FALLBACK_MODEL_2]
+    models = [PRIMARY_MODEL]
 
     last_error = None
     for model in models:
@@ -61,7 +72,7 @@ def llm_completion_json(
     temperature: float = 0.1,
 ) -> str:
     """Call LLM requesting JSON output. Returns raw JSON string."""
-    models = [PRIMARY_MODEL, FALLBACK_MODEL_1, FALLBACK_MODEL_2]
+    models = [PRIMARY_MODEL]
 
     last_error = None
     for model in models:

@@ -48,7 +48,7 @@ class EmbedderConfig:
     use_fp16: bool = True
 
     # Processing
-    batch_size: int = 32
+    batch_size: int = 64
 
     # Text construction
     prepend_preamble: bool = True
@@ -121,13 +121,26 @@ def _load_bgem3_model(config: EmbedderConfig):
     if _bgem3_model is not None:
         return _bgem3_model
     try:
+        # Monkey patch transformers to bypass FlagEmbedding's import errors
+        import transformers.utils
+        import transformers.utils.import_utils
+        if not hasattr(transformers.utils, "is_flash_attn_greater_or_equal_2_10"):
+            transformers.utils.is_flash_attn_greater_or_equal_2_10 = lambda: False
+        if not hasattr(transformers.utils.import_utils, "is_torch_fx_available"):
+            transformers.utils.import_utils.is_torch_fx_available = lambda: False
+    except ImportError:
+        pass
+
+    try:
         from FlagEmbedding import BGEM3FlagModel
     except ImportError as exc:
         raise ImportError(
             "FlagEmbedding is required. Install with: pip install FlagEmbedding"
         ) from exc
     logger.info("Loading BGE-M3 model: %s (fp16=%s)", config.model_name, config.use_fp16)
-    _bgem3_model = BGEM3FlagModel(config.model_name, use_fp16=config.use_fp16)
+    import torch
+    device = "mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu")
+    _bgem3_model = BGEM3FlagModel(config.model_name, use_fp16=config.use_fp16, device=device)
     return _bgem3_model
 
 
@@ -298,7 +311,7 @@ def embed_and_store(
             for chunk, dense_vec, sparse_vec in zip(batch, dense_vecs, sparse_vecs)
         ]
 
-        client.upsert(collection_name=config.collection_name, points=points)
+        client.upsert(collection_name=config.collection_name, points=points, wait=False)
         total_upserted += len(points)
 
     duration = round(time.time() - start, 2)
