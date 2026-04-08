@@ -1,0 +1,74 @@
+@import "tailwindcss";
+
+@theme inline {
+  --color-bark-900: #1a0a0a;
+  --color-bark-800: #2a1515;
+  --color-bark-700: #3d1c1c;
+  --color-bark-600: #5a2e2e;
+
+  --color-sand-25: #fefcf9;
+  --color-sand-50: #faf6f1;
+  --color-sand-100: #f3ede4;
+  --color-sand-200: #e8dfd3;
+  --color-sand-300: #d4c8b8;
+  --color-sand-400: #c4b49e;
+
+  --color-forest: #2d5a3d;
+  --color-forest-dark: #1e3f2b;
+  --color-forest-light: #3a7a52;
+
+  --color-sunlight: #f5c542;
+  --color-sunlight-light: #fad96a;
+
+  --color-background: var(--color-sand-25);
+  --color-foreground: var(--color-bark-900);
+
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+  --font-serif: "Georgia", "Times New Roman", serif;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background: var(--color-background);
+  color: var(--color-foreground);
+  font-family: var(--font-sans), system-ui, sans-serif;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-sand-300);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-sand-400);
+}
+
+/* Skeleton animation */
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.skeleton-shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--color-sand-100) 25%,
+    var(--color-sand-200) 50%,
+    var(--color-sand-100) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+}
