@@ -53,6 +53,9 @@ export default function ChatPage() {
         role: "assistant",
         content: response.answer,
         citations: response.citations,
+        disclaimer: response.disclaimer,
+        confidence_score: response.confidence_score,
+        verification_passed: response.verification_passed,
         timestamp: new Date(),
       };
       setMessages((prev) => [...prev, assistantMsg]);

@@ -1,3 +1,14 @@
+export interface Citation {
+  section: string;
+  title: string;
+  text_snippet: string;
+}
+
+export interface ConflictDetail {
+  description: string;
+  sections: string[];
+}
+
 export interface QueryResponse {
   answer: string;
   citations: Citation[];
@@ -9,24 +20,35 @@ export interface QueryResponse {
   verification_passed: boolean;
 }
 
-export interface Citation {
-  chunk_id: string;
-  cfr_citation: string;
-  text: string;
-  score: number;
-}
-
-export interface ConflictDetail {
-  description: string;
-  sections: string[];
-}
-
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant";
   content: string;
   citations?: Citation[];
+  disclaimer?: string;
+  confidence_score?: number;
+  verification_passed?: boolean;
   timestamp: Date;
+}
+
+export interface SearchResultItem {
+  chunk_id: string;
+  score: number;
+  reranker_score: number | null;
+  text: string;
+  cfr_citation: string | null;
+  chunk_type: string | null;
+  section_preamble: string | null;
+  hierarchy: Record<string, unknown>;
+  defines: string | null;
+  overflow_chunks: Record<string, unknown>[];
+  metadata: Record<string, unknown>;
+}
+
+export interface SearchResponse {
+  query: string;
+  total_results: number;
+  results: SearchResultItem[];
 }
 
 export interface AnalysisFinding {

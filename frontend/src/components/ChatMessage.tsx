@@ -1,7 +1,7 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { User, Bot, ChevronDown, ChevronUp } from "lucide-react";
+import { User, Bot, ChevronDown, ChevronUp, ShieldCheck, ShieldAlert } from "lucide-react";
 import { useState } from "react";
 import type { ChatMessage as ChatMessageType } from "@/types";
 
@@ -35,6 +35,27 @@ export default function ChatMessage({ message }: { message: ChatMessageType }) {
           {message.content}
         </p>
 
+        {!isUser && message.verification_passed !== undefined && (
+          <div className="mt-2 flex items-center gap-1.5">
+            {message.verification_passed ? (
+              <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
+            ) : (
+              <ShieldAlert className="w-3.5 h-3.5 text-amber-500" />
+            )}
+            <span className="text-[11px] text-bark-700/50">
+              {message.verification_passed ? "Verified" : "Unverified"}
+              {message.confidence_score !== undefined &&
+                ` · ${Math.round(message.confidence_score * 100)}% confidence`}
+            </span>
+          </div>
+        )}
+
+        {!isUser && message.disclaimer && (
+          <p className="mt-2 text-[11px] text-bark-700/40 italic">
+            {message.disclaimer}
+          </p>
+        )}
+
         {!isUser && message.citations && message.citations.length > 0 && (
           <div className="mt-3 pt-3 border-t border-sand-200/60">
             <button
@@ -61,10 +82,15 @@ export default function ChatMessage({ message }: { message: ChatMessageType }) {
                     className="text-xs bg-sand-50 border border-sand-200/60 rounded-lg p-2.5"
                   >
                     <span className="font-medium text-forest">
-                      {c.cfr_citation}
+                      {c.section}
                     </span>
+                    {c.title && (
+                      <span className="ml-1.5 text-bark-700/50">
+                        — {c.title}
+                      </span>
+                    )}
                     <p className="mt-1 text-bark-700/80 line-clamp-3">
-                      {c.text}
+                      {c.text_snippet}
                     </p>
                   </div>
                 ))}

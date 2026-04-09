@@ -16,13 +16,14 @@ import Link from "next/link";
 import Navbar from "@/components/Navbar";
 import FileUpload from "@/components/FileUpload";
 import SkeletonDocument from "@/components/SkeletonDocument";
-import { analyzeDocument } from "@/lib/api";
-import type { AnalysisResponse, AnalysisFinding } from "@/types";
+import { analyzeDocument, queryCompliance } from "@/lib/api";
+import type { AnalysisResponse, AnalysisFinding, Citation } from "@/types";
 
 type FollowUpMessage = {
   id: string;
   role: "user" | "assistant";
   content: string;
+  citations?: Citation[];
 };
 
 const severityConfig = {
@@ -148,16 +149,26 @@ export default function AnalyzerPage() {
     setFollowUpInput("");
     setIsFollowUpLoading(true);
 
-    // Mock follow-up response
-    await new Promise((r) => setTimeout(r, 1500));
-
-    const assistantMsg: FollowUpMessage = {
-      id: (Date.now() + 1).toString(),
-      role: "assistant",
-      content: `Based on the analysis findings, regarding "${text}": The relevant regulation requires careful attention to the specific provisions outlined in the findings above. I recommend reviewing the cited CFR sections and consulting with your regulatory team to ensure full compliance. If you need more specific guidance, please provide additional details about your product formulation or labeling.`,
-    };
-    setFollowUps((prev) => [...prev, assistantMsg]);
-    setIsFollowUpLoading(false);
+    try {
+      const response = await queryCompliance(text);
+      const assistantMsg: FollowUpMessage = {
+        id: (Date.now() + 1).toString(),
+        role: "assistant",
+        content: response.answer,
+        citations: response.citations,
+      };
+      setFollowUps((prev) => [...prev, assistantMsg]);
+    } catch {
+      const errorMsg: FollowUpMessage = {
+        id: (Date.now() + 1).toString(),
+        role: "assistant",
+        content:
+          "Sorry, I couldn't process your question. Please ensure the backend server is running and try again.",
+      };
+      setFollowUps((prev) => [...prev, errorMsg]);
+    } finally {
+      setIsFollowUpLoading(false);
+    }
   };
 
   const statusConfig = {
@@ -360,7 +371,29 @@ export default function AnalyzerPage() {
                                   : "bg-sand-50 border border-sand-200/60 text-bark-700 mr-8"
                               }`}
                             >
-                              {msg.content}
+                              <p className="whitespace-pre-wrap">{msg.content}</p>
+                              {msg.citations && msg.citations.length > 0 && (
+                                <div className="mt-2 pt-2 border-t border-sand-200/40 space-y-1.5">
+                                  {msg.citations.map((c, i) => (
+                                    <div
+                                      key={i}
+                                      className="text-xs bg-white/60 rounded-lg p-2"
+                                    >
+                                      <span className="font-medium text-forest">
+                                        {c.section}
+                                      </span>
+                                      {c.title && (
+                                        <span className="ml-1 text-bark-700/50">
+                                          — {c.title}
+                                        </span>
+                                      )}
+                                      <p className="mt-0.5 text-bark-700/70 line-clamp-2">
+                                        {c.text_snippet}
+                                      </p>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
                             </div>
                           ))}
                           {isFollowUpLoading && (
