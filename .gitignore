@@ -1,16 +1,18 @@
 # macOS
 .DS_Store
 
-# Virtual environments
+# Virtual environments (covers entire tree; do not add unanchored `lib/` — it ignores frontend/src/lib)
 venv/
 .venv/
 env/
 ENV/
-bin/
-lib/
-share/
 pyvenv.cfg
-include/
+
+# Stray venv fragments only at repo root (not frontend/src/lib, etc.)
+/bin/
+/lib/
+/include/
+/share/
 
 # Python
 __pycache__/
