@@ -1,0 +1,21 @@
+# Local / dev artifacts (not needed in the image)
+venv/
+.venv/
+
+# CFR XML + extracted chunks — not shipped in cloud images; Qdrant Cloud holds vectors.
+data/
+
+# Optional local reference docs (not required at runtime)
+*.pdf
+
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.env
+.env.*
+*.ipynb
+.git/
+.gitignore

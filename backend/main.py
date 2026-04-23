@@ -26,6 +26,7 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from config import get_settings
 from ingestion.pipeline import (
     EmbedderConfig,
     PipelineConfig,
@@ -49,15 +50,19 @@ logger = logging.getLogger(__name__)
 # App
 # ─────────────────────────────────────────────────────────────────────────────
 
+_settings = get_settings()
+logger.info("Runtime environment=%s  frontend=%s  qdrant=%s", _settings.environment, _settings.frontend_url, _settings.qdrant_url)
+
 app = FastAPI(
     title="FDA Compliance AI",
     description="Regulatory intelligence API powered by CFR data",
     version="0.3.0",
 )
 
+_cors = list(_settings.cors_origins) if _settings.cors_origins else ["*"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -81,8 +86,15 @@ _retriever = None
 def _get_retriever():
     global _retriever
     if _retriever is None:
-        from retrieval.retriever import CFRRetriever
-        _retriever = CFRRetriever()
+        from retrieval.retriever import CFRRetriever, RetrieverConfig
+        s = get_settings()
+        _retriever = CFRRetriever(
+            RetrieverConfig(
+                qdrant_url=s.qdrant_url,
+                qdrant_api_key=s.qdrant_api_key,
+                collection_name=s.qdrant_collection,
+            )
+        )
     return _retriever
 
 
@@ -102,8 +114,14 @@ class IngestRequest(BaseModel):
         description="Skip extraction if cfr_chunks.json already exists (resume mode)",
     )
 
-    qdrant_url: str = Field("http://localhost:6333", description="Qdrant server URL")
-    qdrant_collection: str = Field("cfr_chunks", description="Qdrant collection name")
+    qdrant_url: str = Field(
+        default_factory=lambda: get_settings().qdrant_url,
+        description="Qdrant server URL",
+    )
+    qdrant_collection: str = Field(
+        default_factory=lambda: get_settings().qdrant_collection,
+        description="Qdrant collection name",
+    )
 
 
 class IngestResponse(BaseModel):
@@ -214,6 +232,7 @@ def trigger_ingest(
         skip_extract_if_exists=request.skip_extract_if_exists,
         embedder_config=EmbedderConfig(
             qdrant_url=request.qdrant_url,
+            qdrant_api_key=get_settings().qdrant_api_key,
             collection_name=request.qdrant_collection,
         ),
     )

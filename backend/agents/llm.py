@@ -1,41 +1,23 @@
-"""LiteLLM wrapper with Ollama → Groq → OpenAI fallback chain."""
+"""LiteLLM wrapper using ``config`` — model chain is local (Ollama) or cloud (Groq → Gemini)."""
 
 from __future__ import annotations
 
 import json
 import logging
-import os
+from typing import Optional
 
 import litellm
 
+from config import get_settings
+
 logger = logging.getLogger(__name__)
 
-# ── Model configuration (override via env vars) ──────────────────────────
-
-# Choose your active AI provider here. 
-# Options: "ollama", "openai", "anthropic", "groq", "gemini"
-ACTIVE_PROVIDER = os.getenv("ACTIVE_PROVIDER", "ollama")
-
-# Define the default model for each provider
-PROVIDER_MODELS = {
-    "ollama": "ollama/llama3.2",
-    "openai": "openai/gpt-4o",
-    "anthropic": "anthropic/claude-3-5-sonnet-latest",
-    "groq": "groq/llama-3.1-70b-versatile",
-    "gemini": "gemini/gemini-1.5-pro",
-}
-
-PRIMARY_MODEL = os.getenv("PRIMARY_MODEL", PROVIDER_MODELS.get(ACTIVE_PROVIDER, "ollama/llama3.2"))
-OLLAMA_API_BASE = os.getenv("OLLAMA_API_BASE", "http://localhost:11434")
-
-# Suppress litellm's verbose logging
 litellm.suppress_debug_info = True
 
 
-def _get_api_base(model: str) -> str | None:
-    """Return api_base for Ollama models, None otherwise."""
+def _api_base_for_model(model: str, ollama_base: Optional[str]) -> Optional[str]:
     if model.startswith("ollama"):
-        return OLLAMA_API_BASE
+        return ollama_base or get_settings().ollama_base_url
     return None
 
 
@@ -44,11 +26,9 @@ def llm_completion(
     max_tokens: int = 1024,
     temperature: float = 0.1,
 ) -> str:
-    """Call LLM with automatic fallback. Returns the response text."""
-    models = [PRIMARY_MODEL]
-
-    last_error = None
-    for model in models:
+    """Call LLM with automatic fallback through the configured model chain."""
+    last_error: Exception | None = None
+    for model, ollama_base in get_settings().llm_model_chain:
         try:
             logger.debug("Trying model: %s", model)
             response = litellm.completion(
@@ -56,7 +36,7 @@ def llm_completion(
                 messages=messages,
                 max_tokens=max_tokens,
                 temperature=temperature,
-                api_base=_get_api_base(model),
+                api_base=_api_base_for_model(model, ollama_base),
             )
             return response.choices[0].message.content.strip()
         except Exception as exc:
@@ -72,10 +52,8 @@ def llm_completion_json(
     temperature: float = 0.1,
 ) -> str:
     """Call LLM requesting JSON output. Returns raw JSON string."""
-    models = [PRIMARY_MODEL]
-
-    last_error = None
-    for model in models:
+    last_error: Exception | None = None
+    for model, ollama_base in get_settings().llm_model_chain:
         try:
             logger.debug("Trying model (JSON mode): %s", model)
             kwargs = dict(
@@ -83,14 +61,12 @@ def llm_completion_json(
                 messages=messages,
                 max_tokens=max_tokens,
                 temperature=temperature,
-                api_base=_get_api_base(model),
+                api_base=_api_base_for_model(model, ollama_base),
             )
-            # JSON mode — not all providers support response_format
             try:
                 kwargs["response_format"] = {"type": "json_object"}
                 response = litellm.completion(**kwargs)
             except Exception:
-                # Retry without response_format for providers that don't support it
                 kwargs.pop("response_format", None)
                 response = litellm.completion(**kwargs)
 
@@ -107,7 +83,6 @@ def parse_llm_json(raw: str, messages: list[dict] | None = None) -> dict:
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
-        # Try to extract JSON from markdown code blocks
         if "```" in raw:
             for block in raw.split("```"):
                 cleaned = block.strip()
@@ -118,7 +93,6 @@ def parse_llm_json(raw: str, messages: list[dict] | None = None) -> dict:
                 except json.JSONDecodeError:
                     continue
 
-    # Retry once with explicit instruction
     if messages:
         retry_messages = messages + [
             {"role": "assistant", "content": raw},
