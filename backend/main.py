@@ -4,12 +4,14 @@ FDA Compliance AI — Root API Server
 FastAPI application that exposes ingestion pipeline, search, and query endpoints.
 
 Endpoints:
-  POST /api/ingest          — trigger the full ingestion pipeline
-  GET  /api/ingest/status   — check last pipeline run status
-  POST /api/search          — hybrid search over CFR chunks
-  GET  /api/chunks/{id}     — fetch a single chunk by ID
-  POST /api/query           — multi-agent compliance reasoning
-  GET  /health              — liveness probe
+  POST /api/ingest                — trigger the full ingestion pipeline
+  GET  /api/ingest/status         — check last pipeline run status
+  POST /api/search                — hybrid search over CFR chunks
+  GET  /api/chunks/{id}           — fetch a single chunk by ID
+  POST /api/query                 — multi-agent compliance reasoning
+  POST /api/analyze-document      — Phase 4: document violation analysis (async)
+  GET  /api/jobs/{job_id}         — poll document analysis job status
+  GET  /health                    — liveness probe
 
 Run with:
   uvicorn main:app --reload --host 0.0.0.0 --port 8000
@@ -19,10 +21,11 @@ from __future__ import annotations
 
 import logging
 import threading
+import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -390,3 +393,102 @@ def get_chunk(chunk_id: str):
     if payload is None:
         raise HTTPException(status_code=404, detail=f"Chunk '{chunk_id}' not found")
     return payload
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# In-memory document analysis job store
+# ─────────────────────────────────────────────────────────────────────────────
+
+# {job_id: {"status": "queued"|"running"|"completed"|"failed", "result": dict|None, "error": str|None}}
+_jobs: dict[str, dict] = {}
+_jobs_lock = threading.Lock()
+
+
+def _run_document_analysis(job_id: str, document_text: str, document_name: str) -> None:
+    """Background task: run document analysis graph and store result in _jobs."""
+    with _jobs_lock:
+        _jobs[job_id]["status"] = "running"
+
+    try:
+        from document_analysis.graph import get_document_analysis_graph
+
+        graph = get_document_analysis_graph()
+        result = graph.invoke({"document_text": document_text, "document_name": document_name})
+        report = result.get("violation_report", {})
+
+        with _jobs_lock:
+            _jobs[job_id]["status"] = "completed"
+            _jobs[job_id]["result"] = report
+    except Exception as exc:
+        logger.exception("Document analysis job %s failed: %s", job_id, exc)
+        with _jobs_lock:
+            _jobs[job_id]["status"] = "failed"
+            _jobs[job_id]["error"] = str(exc)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Endpoints — Document Violation Analysis (Phase 4)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.post("/api/analyze-document", tags=["document-analysis"])
+async def analyze_document(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+):
+    """
+    Upload a product label document (PDF, DOCX, or plain text) and trigger
+    an asynchronous FDA compliance violation analysis.
+
+    Returns a job_id. Poll GET /api/jobs/{job_id} for the result.
+    """
+    from document_analysis.parser import extract_text
+
+    filename = file.filename or "upload"
+    file_bytes = await file.read()
+
+    if len(file_bytes) == 0:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+
+    try:
+        document_text = extract_text(file_bytes, filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except ImportError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    job_id = str(uuid.uuid4())
+    with _jobs_lock:
+        _jobs[job_id] = {"status": "queued", "result": None, "error": None}
+
+    background_tasks.add_task(_run_document_analysis, job_id, document_text, filename)
+
+    logger.info("Document analysis job %s queued for '%s'", job_id, filename)
+    return {
+        "job_id": job_id,
+        "message": "Document analysis started. Poll /api/jobs/{job_id} for results.",
+        "document_name": filename,
+    }
+
+
+@app.get("/api/jobs/{job_id}", tags=["document-analysis"])
+def get_job_status(job_id: str):
+    """
+    Poll the status of a document analysis job.
+
+    Response:
+      - status: "queued" | "running" | "completed" | "failed"
+      - result: ViolationReport (only when status == "completed")
+      - error: error message (only when status == "failed")
+    """
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found.")
+
+    return {
+        "job_id": job_id,
+        "status": job["status"],
+        "result": job.get("result"),
+        "error": job.get("error"),
+    }

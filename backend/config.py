@@ -38,7 +38,7 @@ class Settings:
     backend_url: str
     qdrant_url: str
     qdrant_api_key: str | None
-    qdrant_collection: str = "cfr_chunks"
+    qdrant_collection: str = "FDAComplianceAI"
     # LLM: each entry is (litellm model id, ollama_api_base or None)
     llm_model_chain: tuple[tuple[str, str | None], ...] = field(default_factory=tuple)
     ollama_base_url: str = "http://localhost:11434"
@@ -62,7 +62,7 @@ class Settings:
             model = f"ollama/{model}"
         qdrant_url = (os.getenv("QDRANT_URL") or "http://localhost:6333").strip().rstrip("/")
         qdrant_key = (os.getenv("QDRANT_API_KEY") or "").strip() or None
-        qdrant_collection = (os.getenv("QDRANT_COLLECTION") or "cfr_chunks").strip()
+        qdrant_collection = (os.getenv("QDRANT_COLLECTION") or "FDAComplianceAI").strip()
         extras = _split_origins(os.getenv("CORS_EXTRA_ORIGINS"))
         origins = _unique_strs((frontend, *extras))
         return Settings(
@@ -91,7 +91,7 @@ class Settings:
         qdrant_key = (os.getenv("QDRANT_API_KEY") or "").strip() or None
         if not qdrant_key:
             raise ValueError("Cloud mode requires QDRANT_API_KEY for Qdrant Cloud.")
-        qdrant_collection = (os.getenv("QDRANT_COLLECTION") or "cfr_chunks").strip()
+        qdrant_collection = (os.getenv("QDRANT_COLLECTION") or "FDAComplianceAI").strip()
 
         groq_model = (os.getenv("GROQ_MODEL") or "groq/llama-3.1-8b-instant").strip()
         if not groq_model.startswith("groq/"):

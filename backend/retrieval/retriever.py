@@ -1,8 +1,8 @@
 """
 CFR Hybrid Retriever — BGE-M3 Dense + Sparse + Reranker
 =========================================================
-Performs hybrid search over the Qdrant "cfr_chunks" collection using
-BGE-M3 dense and sparse vectors, fuses results with Reciprocal Rank
+Performs hybrid search over the Qdrant "FDAComplianceAI" collection using
+BGE-M3 dense ("cfr-dense") and sparse ("cfr-sparse") vectors, fuses results with Reciprocal Rank
 Fusion (RRF), and optionally reranks with bge-reranker-v2-m3.
 
 Usage:
@@ -44,7 +44,7 @@ class RetrieverConfig:
     # Qdrant connection
     qdrant_url: str = "http://localhost:6333"
     qdrant_api_key: Optional[str] = None
-    collection_name: str = "cfr_chunks"
+    collection_name: str = "FDAComplianceAI"
 
     # BGE-M3 encoder
     model_name: str = "BAAI/bge-m3"
@@ -219,7 +219,7 @@ class CFRRetriever:
         results = self.client.query_points(
             collection_name=self.config.collection_name,
             query=dense_vec,
-            using="dense",
+            using="cfr-dense",
             query_filter=qdrant_filter,
             limit=top_k,
             with_payload=True,
@@ -241,7 +241,7 @@ class CFRRetriever:
                 indices=sparse_dict["indices"],
                 values=sparse_dict["values"],
             ),
-            using="sparse",
+            using="cfr-sparse",
             query_filter=qdrant_filter,
             limit=top_k,
             with_payload=True,

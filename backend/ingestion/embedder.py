@@ -7,7 +7,7 @@ into a single Qdrant collection with named vectors.
 
 Each Qdrant point stores:
   - id       : SHA-256 of chunk_id (UUID-compatible hex)
-  - vectors  : {"dense": [...], "sparse": SparseVector(...)}
+  - vectors  : {"cfr-dense": [...], "cfr-sparse": SparseVector(...)}
   - payload  : flattened metadata + full text for filtered retrieval
 
 Dependencies:
@@ -40,7 +40,7 @@ class EmbedderConfig:
     # Qdrant connection
     qdrant_url: str = "http://localhost:6333"
     qdrant_api_key: Optional[str] = None
-    collection_name: str = "cfr_chunks"
+    collection_name: str = "FDAComplianceAI"
 
     # BGE-M3 model
     model_name: str = "BAAI/bge-m3"
@@ -182,7 +182,9 @@ def _ensure_collection(client, config: EmbedderConfig) -> None:
     """Create Qdrant collection with named dense + sparse vectors if it doesn't exist."""
     from qdrant_client.models import (
         Distance,
+        HnswConfigDiff,
         PayloadSchemaType,
+        SparseIndexParams,
         SparseVectorParams,
         VectorParams,
     )
@@ -196,10 +198,17 @@ def _ensure_collection(client, config: EmbedderConfig) -> None:
     client.create_collection(
         collection_name=config.collection_name,
         vectors_config={
-            "dense": VectorParams(size=config.dense_dim, distance=Distance.COSINE),
+            "cfr-dense": VectorParams(
+                size=config.dense_dim,
+                distance=Distance.COSINE,
+                on_disk=False,
+                hnsw_config=HnswConfigDiff(m=24, payload_m=24, ef_construct=256),
+            ),
         },
         sparse_vectors_config={
-            "sparse": SparseVectorParams(),
+            "cfr-sparse": SparseVectorParams(
+                index=SparseIndexParams(on_disk=True),
+            ),
         },
     )
 
@@ -300,8 +309,8 @@ def embed_and_store(
             PointStruct(
                 id=_chunk_id_to_uuid(chunk["chunk_id"]),
                 vector={
-                    "dense": dense_vec,
-                    "sparse": SparseVector(
+                    "cfr-dense": dense_vec,
+                    "cfr-sparse": SparseVector(
                         indices=sparse_vec["indices"],
                         values=sparse_vec["values"],
                     ),

@@ -1,8 +1,10 @@
 # FDA Food Labeling Compliance RAG — Implementation Plan
 
-> **Version**: 1.0  
-> **Last Updated**: March 2026  
-> **Status**: Architecture & Design Phase  
+> **Version**: 2.0  
+> **Last Updated**: April 2026  
+> **Status**: Phases 1–4 Complete; Phase 5 (Observability & Evaluation) pending
+
+> **Note**: This document reflects what was *actually implemented*. Key deviations from v1.0: (1) single BGE-M3 model only — Kanon 2 and HyDE dropped; (2) single Qdrant collection with named vectors — no separate sparse/kanon collections; (3) Neo4j optional and off by default — cross-reference and definition resolution use Qdrant filtered search; (4) Celery/Redis/Langfuse/RAGAS not yet implemented.  
 
 ---
 
@@ -188,49 +190,41 @@ General-purpose embedding models like `text-embedding-3-large` or `e5-large-v2` 
 | `Kanon 2 Embedder` (Isaacus) | Legal (regulations) | 16,384 tokens | Via API/AWS | ❌ | #1 on MLEB NDCG@10=86.03 on regulatory tasks; 9% better than OpenAI te3-large; **selected as production upgrade model** |
 | `Qwen3-Embedding-8B` | General (MTEB #1 open) | 8,192 tokens | ✅ (8B params) | ❌ | Best general open model; too large for CPU laptop; GPU required |
 
-### Decision: Dual-Model Hybrid Strategy
+### Decision: BGE-M3 Single-Model Strategy *(implemented)*
 
-The fundamental insight is that **no single model covers both legal regulatory structure AND biomedical chemical terminology equally well**. The solution is a **dual-model ensemble with late fusion**:
+The Kanon 2 Embedder and dual-model ensemble were not implemented. **BGE-M3 is the sole embedding model**, providing both dense and sparse vectors in a single call. This covers both regulatory structure and biomedical terminology adequately for the current system.
 
-#### Primary Dense Embedding: BGE-M3
-- Runs fully locally (CPU or GPU); ~570MB model size
-- Simultaneously produces: dense vector (1024-dim), sparse SPLADE vector, and ColBERT multi-vector
-- Qdrant natively stores and searches all three in a single collection
-- Context window of 8,192 tokens — handles full CFR sections without truncation
-- MIT license; fine-tunable on domain data
-- Handles the semantic structure of regulatory language
+#### Embedding: BGE-M3 (BAAI/bge-m3)
+- Runs fully locally (CPU or GPU) via `FlagEmbedding`; ~570 MB model (fp16)
+- Single `encode()` call returns dense vector (1024-dim) + sparse lexical weights
+- `batch_size=64`, `use_fp16=True`
+- Context window of 8,192 tokens — handles full CFR sections
+- MIT license
 
-#### Secondary Dense Embedding: Kanon 2 Embedder (via Isaacus API)
-- NDCG@10 = 91.48 specifically on **regulatory** retrieval tasks (highest in class)
-- Trained on millions of laws, regulations, cases from 38 jurisdictions
-- 16,384 token context window
-- Available via Isaacus API (with free tier for development)
-- Handles legal regulatory language with highest known accuracy
+#### Why Kanon 2 Was Dropped
+The Isaacus API added an external dependency and API cost. BGE-M3 + cross-encoder reranking (`bge-reranker-v2-m3`) provides sufficient retrieval quality for the current scope without the added complexity.
 
-#### Why Not PubMedBERT?
-PubMedBERT achieves 95.62% Pearson correlation on biomedical benchmarks and excels at clinical/pharma terminology. However, it has a 512-token context window (too small for full CFR sections), produces no sparse vectors, and is entirely blind to regulatory legal structure. The biomedical terminology in 21 CFR Part 101 (fatty acids, vitamins, minerals, nutrient thresholds) is sufficiently represented by BGE-M3 after fine-tuning on the CFR corpus — PubMedBERT's advantage is in clinical notes and PubMed abstracts, not regulatory text.
+#### Why HyDE Was Dropped
+HyDE (hypothetical document embedding) requires an LLM call per sub-question before retrieval, adding latency and complexity. The multi-agent Planner node achieves equivalent query decomposition directly.
 
-#### Fine-Tuning Plan (after initial deployment)
-Collect 500–1000 query-passage pairs from the CFR corpus using:
-- Real compliance questions + their authoritative section answers
-- Negative pairs (plausible but incorrect section matches)
-Fine-tune BGE-M3 using `sentence-transformers` with MultipleNegativesRankingLoss. Expected gain: 15–25% improvement on domain-specific recall.
-
-### Retrieval Strategy: Triple-Vector Fusion
-
-At query time, each query is embedded with both models and searched in parallel:
+### Retrieval Strategy: Dual-Vector Fusion *(implemented)*
 
 ```
 User query
     │
-    ├── BGE-M3 dense vector    → Qdrant dense collection → top-20 results
-    ├── BGE-M3 SPLADE sparse   → Qdrant sparse collection → top-20 results  
-    └── Kanon 2 dense vector   → Qdrant kanon collection → top-20 results
+    ├── BGE-M3 dense vector    → Qdrant "FDAComplianceAI" collection (dense) → top-60
+    └── BGE-M3 sparse vector   → Qdrant "FDAComplianceAI" collection (sparse) → top-60
 
-    All three lists → RRF rank fusion → top-30 merged candidates
+    Both lists → RRF fusion (k=60) → top-20 merged candidates
     → bge-reranker-v2-m3 cross-encoder → final top-10
-    → Neo4j 1-hop graph expansion → final context set
+    → Qdrant filtered search for cross-reference expansion (no Neo4j)
 ```
+
+#### Fine-Tuning Plan (future)
+Collect 500–1000 query-passage pairs from the CFR corpus using:
+- Real compliance questions + their authoritative section answers
+- Negative pairs (plausible but incorrect section matches)
+Fine-tune BGE-M3 using `sentence-transformers` with MultipleNegativesRankingLoss. Expected gain: 15–25% improvement on domain-specific recall.
 
 ---
 
@@ -267,429 +261,369 @@ GET https://www.ecfr.gov/api/versioner/v1/full/current/title-21.xml?part=101
 
 ## 7. Layer 2 — Ingestion Pipeline
 
-### 7.1 XML Parsing
+### 7.1 XML Parsing *(implemented)*
 
-The eCFR XML uses a hierarchical `<DIV>` structure:
+The actual CFR XML files (10 files, Title 21 vols 1–9) use the `CFRGRANULE` structure, **not** the `DIV`-based structure in the original plan. The parser is `backend/ingestion/extractor.py`, implemented using the stdlib `xml.etree.ElementTree`.
 
-```
-DIV1 TYPE="TITLE"        → Title 21
-  DIV3 TYPE="CHAPTER"    → Chapter I (FDA)
-    DIV5 TYPE="PART"     → Part 101
-      DIV6 TYPE="SUBPART"→ Subpart A, B, C...
-        SECTION          → §101.1, §101.2, §101.3...
-          P              → Paragraph text
-```
+**Two XML structural variants handled:**
+- **chapI files (vols 1–8)**: `CFRGRANULE > CHAPTER > SUBCHAP > PART > SUBPART > SECTION`
+- **chapII/III files (vol 9)**: `CFRGRANULE > CHAPTER > PART > SUBPART > SECTION`
 
-The parser walks this tree using `lxml`, extracts each `SECTION` as a document, and records the full ancestry path as metadata.
+Both share: `SECTION > SECTNO + SUBJECT + P + GPOTABLE + CITA`
 
-**Implementation** (`ingestion/xml_parser.py`):
+**Tags skipped** (non-regulatory): `TOC, TOCHD, CONTENTS, CHAPTI, PTHD, PGHD, SECHD, EAR, PRTPAGE, LRH, RRH, FAIDS, ALPHLIST, EXPLA, IPAR, STUB, SIDEHED, SIG, NAME, POSITION, EDNOTE`
 
-```python
-from lxml import etree
+### 7.2 Contextual Chunking *(implemented — paragraph-level strategy)*
 
-def parse_cfr_xml(xml_path: str) -> list[dict]:
-    tree = etree.parse(xml_path)
-    sections = []
-    
-    for section in tree.findall('.//SECTION'):
-        section_num = section.findtext('SECTNO', '').strip()
-        subject = section.findtext('SUBJECT', '').strip()
-        
-        # Collect all paragraph text
-        paragraphs = []
-        for p in section.findall('.//P'):
-            text = ''.join(p.itertext()).strip()
-            if text:
-                paragraphs.append(text)
-        
-        full_text = '\n\n'.join(paragraphs)
-        
-        # Extract ancestry metadata
-        ancestors = get_ancestors(section)  # walk .getparent() chain
-        
-        # Extract cross-references (§ patterns)
-        cross_refs = extract_cross_refs(full_text)
-        
-        sections.append({
-            'section_id': section_num,          # e.g. "101.62"
-            'title': subject,                   # e.g. "Nutrient content claims..."
-            'text': full_text,
-            'part': ancestors.get('part'),      # "101"
-            'subpart': ancestors.get('subpart'),# "B"
-            'chapter': 'I',
-            'cfr_title': '21',
-            'cross_refs': cross_refs,           # ["101.13", "101.14"]
-            'char_count': len(full_text),
-            'token_estimate': len(full_text) // 4
-        })
-    
-    return sections
+Chunking is paragraph-level, not section-level. Each `SECTION` is decomposed into one or more typed chunks by `extractor.py`:
 
-def extract_cross_refs(text: str) -> list[str]:
-    import re
-    # Match patterns like §101.62, § 101.13(b), §§101.13 and 101.14
-    pattern = r'§+\s*(\d+\.\d+)'
-    return list(set(re.findall(pattern, text)))
-```
+**Chunk types produced per section:**
+- `section` — SECTION has one `<P>` element (no letter labels) → single chunk for the whole section
+- `paragraph` — one chunk per lettered paragraph `(a)`, `(b)`, `(c)` … in multi-paragraph sections
+- `definition` — one chunk per `<E>`-tagged defined term in Definitions sections (e.g., §101.2)
 
-### 7.2 Contextual Chunking
+**Paragraph label hierarchy (4-level CFR structure):**
+| Level | Type | Examples |
+|-------|------|---------|
+| 1 | `letter` | (a) (b) (c) |
+| 2 | `number` | (1) (2) (3) |
+| 3 | `roman` | (i) (ii) (iii) |
+| 4 | `cap_letter` | (A) (B) (C) |
 
-Each section is chunked with a **contextual prefix** prepended before embedding. This technique (pioneered by Anthropic's research) dramatically improves retrieval by ensuring no chunk loses its regulatory context.
+**Overflow splitting**: Paragraphs exceeding 400 tokens are split at sentence boundaries with a ~2-sentence overlap tail. Overflow chunks are linked via `overflow_sequence.next_chunk_id` and flagged with `is_overflow_chunk: true`.
 
-**Contextual prefix format**:
-```
-[CONTEXT] This passage is from 21 CFR Title 21, Chapter I (FDA), Part 101 
-(Food Labeling), Subpart B (Specific Food Labeling Requirements), Section 101.62 
-(Nutrient content claims for fat, fatty acid, and cholesterol content). 
-Part 101 governs the labeling of human food products including nutrition 
-facts, health claims, and nutrient content claims.
-[/CONTEXT]
+**GPOTABLE handling**: Tables are serialized as markdown and embedded in the containing chunk.
 
-{chunk_text}
-```
+**Embed text construction**: At embedding time, `embedder.py` optionally prepends the `section_preamble` (governing intro sentence) to each paragraph chunk so it is never missing context — this replaces the `[CONTEXT]` prefix approach from the original plan.
 
-**Chunking rules**:
-- Minimum chunk: 100 tokens → merge with adjacent section
-- Target chunk: 300–512 tokens  
-- Maximum chunk: 1,024 tokens → split at sentence boundary with 20% overlap
-- Sections under 1,024 tokens are kept whole (most CFR sections are)
-- For long sections, child chunks retain the parent section's header as a prefix
+**Verified output** (smoke tested): 59,105 total chunks from 10 XML files.
 
-**prev/next linking**: Each chunk stores `prev_chunk_id` and `next_chunk_id` so the retriever can expand context windows at query time.
-
-### 7.3 Metadata Schema per Chunk
+### 7.3 Metadata Schema per Chunk *(actual implemented schema)*
 
 ```python
-class CFRChunk:
-    chunk_id: str          # "101.62_c0" (section + chunk index)
-    section_id: str        # "101.62"
-    section_title: str     # "Nutrient content claims for fat..."
-    subpart: str           # "B"
-    part: str              # "101"
-    cfr_title: str         # "21"
-    text: str              # raw chunk text (for storage in Qdrant payload)
-    context_text: str      # contextual prefix + chunk text (for embedding)
-    token_count: int
-    prev_chunk_id: str | None
-    next_chunk_id: str | None
-    cross_refs: list[str]  # ["101.13", "101.14"]
-    source_url: str        # eCFR URL for this section
-    indexed_at: datetime
-```
-
-### 7.4 Dual-Model Embedding
-
-```python
-from FlagEmbedding import BGEM3FlagModel
-import isaacus  # Kanon 2 API client
-
-bge_model = BGEM3FlagModel('BAAI/bge-m3', use_fp16=True)
-
-def embed_chunk(chunk: CFRChunk) -> EmbeddedChunk:
-    text = chunk.context_text  # prefixed text
-    
-    # BGE-M3: dense + sparse in one call
-    bge_output = bge_model.encode(
-        [text],
-        return_dense=True,
-        return_sparse=True,
-        return_colbert_vecs=False  # optional, adds ColBERT multi-vec
-    )
-    
-    # Kanon 2: dense only, regulatory-optimized
-    kanon_output = isaacus_client.embed(
-        model="kanon-2-embedder",
-        texts=[text],
-        task="retrieval/document"
-    )
-    
-    return EmbeddedChunk(
-        chunk=chunk,
-        bge_dense=bge_output['dense_vecs'][0],       # 1024-dim
-        bge_sparse=bge_output['lexical_weights'][0],  # sparse dict {token_id: weight}
-        kanon_dense=kanon_output.embeddings[0]        # 1792-dim
-    )
-```
-
-### 7.5 Graph Extraction
-
-After parsing, a separate graph builder processes every section's `cross_refs` list and writes edges to Neo4j:
-
-```python
-def build_graph(sections: list[dict], neo4j_driver):
-    with neo4j_driver.session() as session:
-        # Create section nodes
-        for s in sections:
-            session.run("""
-                MERGE (sec:Section {id: $id})
-                SET sec.title = $title,
-                    sec.subpart = $subpart,
-                    sec.part = $part,
-                    sec.url = $url
-            """, **s)
-        
-        # Create cross-reference edges
-        for s in sections:
-            for ref in s['cross_refs']:
-                session.run("""
-                    MATCH (a:Section {id: $from_id})
-                    MATCH (b:Section {id: $to_id})
-                    MERGE (a)-[:REFERENCES]->(b)
-                """, from_id=s['section_id'], to_id=ref)
-```
-
-**Neo4j node types**:
-- `Section` — each CFR section
-- `Subpart` — container grouping sections
-- `DefinedTerm` — legal definitions (extracted from §101.2, §101.9, etc.)
-
-**Neo4j edge types**:
-- `REFERENCES` — explicit §-reference in text
-- `DEFINED_IN` — term defined in a section
-- `EXEMPTED_BY` — exception relationship
-- `CONTAINED_IN` — section → subpart hierarchy
-
----
-
-## 8. Layer 3 — Hybrid Storage (Qdrant + Neo4j)
-
-### 8.1 Qdrant Collections
-
-Three named collections store the three vector types:
-
-```python
-from qdrant_client import QdrantClient
-from qdrant_client.models import VectorParams, Distance, SparseVectorParams
-
-client = QdrantClient("localhost", port=6333)
-
-# BGE-M3 dense collection
-client.create_collection("cfr101_bge_dense", vectors_config=VectorParams(
-    size=1024, distance=Distance.COSINE
-))
-
-# BGE-M3 sparse collection (SPLADE)
-client.create_collection("cfr101_bge_sparse", sparse_vectors_config={
-    "sparse": SparseVectorParams()
-})
-
-# Kanon 2 dense collection
-client.create_collection("cfr101_kanon_dense", vectors_config=VectorParams(
-    size=1792, distance=Distance.COSINE
-))
-```
-
-**Payload stored in each point** (all three collections share same payload):
-```json
 {
-  "chunk_id": "101.62_c0",
-  "section_id": "101.62",
-  "section_title": "Nutrient content claims for fat, fatty acid, and cholesterol content",
-  "subpart": "B",
-  "part": "101",
-  "text": "...(raw chunk text)...",
-  "prev_chunk_id": "101.61_c0",
-  "next_chunk_id": "101.62_c1",
-  "cross_refs": ["101.13", "101.14"],
-  "source_url": "https://www.ecfr.gov/current/title-21/chapter-I/part-101/section-101.62",
-  "token_count": 487
+    # Identity
+    "chunk_id":     str,   # e.g. "21-I-SCA-1-A-1-A-1-para-a"
+    "cfr_citation": str,   # e.g. "21 CFR § 101.62(a)"
+    "chunk_type":   str,   # "section" | "paragraph" | "definition"
+
+    # Hierarchy
+    "hierarchy": {
+        "title":       str,          # "21"
+        "chapter":     str,          # "I"
+        "subchapter":  str | None,   # "A" (chapI files only)
+        "part":        str,          # "101"
+        "subpart":     str | None,   # "B"
+        "section":     str,          # "101.62"
+        "paragraph":   str | None,   # "a"  (top letter label)
+        "subparagraph": str | None,  # deepest sub-label found
+    },
+
+    # Flat index fields (for Qdrant payload filters)
+    "part_number":    str,
+    "chapter_number": str,
+    "section_number": str,
+    "source_file":    str,          # XML filename
+    "is_overflow_chunk": bool,
+
+    # Text
+    "text":             str,        # raw chunk text
+    "section_preamble": str | None, # governing intro sentence of the section
+    "defines":          str | None, # defined term (definition chunks only)
+
+    # Structure
+    "paragraph_labels": list[dict], # [{label, level, level_type, topic}]
+    "overflow_sequence": {
+        "chunk_index": int,
+        "next_chunk_id": str | None,
+        "prev_chunk_id": str | None,
+    } | None,
+
+    # Extracted metadata
+    "cross_references_internal": list[str],  # § X.YZ refs found in text
+    "metrics": list[dict],                   # [{value, unit, context}]
 }
 ```
 
-**Metadata filters available at search time** — filter by `subpart`, `part`, `section_id` before vector search to scope queries.
+### 7.4 Single-Model Embedding *(implemented — BGE-M3 only)*
 
-### 8.2 Neo4j Schema
+Kanon 2 was not implemented. BGE-M3 produces both dense and sparse vectors in a single call.
 
-```cypher
-// Node: Section
-CREATE (s:Section {
-  id: "101.62",
-  title: "Nutrient content claims for fat...",
-  subpart: "B",
-  part: "101",
-  url: "https://..."
-})
+```python
+from FlagEmbedding import BGEM3FlagModel
 
-// Node: DefinedTerm
-CREATE (d:DefinedTerm {
-  term: "nutrient content claim",
-  defined_in_section: "101.13"
-})
+model = BGEM3FlagModel('BAAI/bge-m3', use_fp16=True)
 
-// Edge: cross-reference
-MATCH (a:Section {id:"101.62"}), (b:Section {id:"101.13"})
-CREATE (a)-[:REFERENCES {context: "as defined in"}]->(b)
+# embed_text optionally prepends section_preamble
+output = model.encode(
+    [embed_text],
+    return_dense=True,
+    return_sparse=True,
+    return_colbert_vecs=False,
+    batch_size=64,
+)
 
-// Edge: definition
-MATCH (s:Section {id:"101.13"}), (d:DefinedTerm {term:"nutrient content claim"})
-CREATE (s)-[:DEFINES]->(d)
+dense_vec  = output['dense_vecs'][0]       # list[float], 1024-dim
+sparse_raw = output['lexical_weights'][0]  # dict {token_id: weight}
+
+# Convert to Qdrant SparseVector format
+sparse_vec = SparseVector(
+    indices=list(sparse_raw.keys()),
+    values=list(sparse_raw.values()),
+)
 ```
+
+Both vectors are stored as named vectors in a **single Qdrant collection** (`cfr_chunks`). `batch_size=64` with fp16 for memory efficiency.
+
+### 7.5 Graph Extraction *(optional — disabled by default)*
+
+`backend/ingestion/graph_builder.py` exists and can write CFR structure to Neo4j. It is **not run by default** (`run_graph: bool = False` in `PipelineConfig` and the `POST /api/ingest` request schema).
+
+Neo4j is commented out of `requirements.txt`. Cross-reference resolution in the multi-agent layer uses Qdrant filtered search instead of graph traversal (see Section 9 and Section 10).
+
+The schema design (Section, Subpart, DefinedTerm nodes; REFERENCES, DEFINED_IN, EXEMPTED_BY, CONTAINED_IN edges) remains valid if Neo4j is ever activated.
 
 ---
 
-## 9. Layer 4 — Retrieval Engine
+## 8. Layer 3 — Hybrid Storage (Qdrant only; Neo4j optional)
 
-The retrieval engine runs in 5 sequential steps for every query:
+### 8.1 Qdrant Collection *(implemented — single collection with named vectors)*
 
-### Step 1 — Query Decomposition
-
-For complex queries, an LLM breaks the question into atomic sub-questions that can each be answered by a single CFR section:
-
-```
-User: "Can my product be labeled 'low sodium' and include a heart disease health claim?"
-
-Sub-questions:
-  1. What is the regulatory definition of 'low sodium'?
-  2. What are the threshold requirements to qualify for a low sodium nutrient content claim?
-  3. What are the approved health claims related to heart disease and cardiovascular disease?
-  4. What are the general conditions for using a health claim on a food label?
-  5. Are there any restrictions on combining nutrient content claims and health claims?
-```
-
-Simple queries (single-section answers) skip decomposition.
-
-### Step 2 — HyDE (Hypothetical Document Embedding)
-
-For each sub-question, instead of embedding the question directly, an LLM generates a **hypothetical regulatory passage** that would answer the question. This hypothetical text is then embedded — its embedding lives in the same semantic space as real CFR text, improving recall.
+One collection (`cfr_chunks`) stores both vector types as named vectors:
 
 ```python
-HYDE_PROMPT = """
-You are a food labeling regulatory expert. Write a concise passage 
-(2-4 sentences) from the Code of Federal Regulations that would 
-directly answer the following question. Write it in regulatory language.
-Respond with only the passage, no preamble.
+from qdrant_client import QdrantClient
+from qdrant_client.models import (
+    VectorParams, Distance, SparseVectorParams, SparseIndexParams
+)
 
-Question: {question}
-"""
+client = QdrantClient(url=qdrant_url, api_key=qdrant_api_key)
 
-hypothetical_doc = llm.generate(HYDE_PROMPT.format(question=sub_question))
-hyde_embedding = bge_model.encode([hypothetical_doc])['dense_vecs'][0]
+client.create_collection(
+    collection_name="FDAComplianceAI",
+    vectors_config={"dense": VectorParams(size=1024, distance=Distance.COSINE)},
+    sparse_vectors_config={"sparse": SparseVectorParams(
+        index=SparseIndexParams(on_disk=False)
+    )},
+)
 ```
 
-### Step 3 — Qdrant Hybrid Search
+**Payload indexes created** (for filtered search):
+`chunk_id`, `part_number`, `chapter_number`, `chunk_type`, `cfr_citation` (text index), `section_number`, `defines`, `is_overflow_chunk`, `source_file`
 
-For each sub-question, run **parallel searches** across all three vector collections:
+**Each Qdrant point**:
+```python
+PointStruct(
+    id=sha256_uuid(chunk["chunk_id"]),
+    vector={
+        "dense": dense_vec,           # list[float], 1024-dim
+        "sparse": SparseVector(...)   # lexical weights
+    },
+    payload={
+        # flattened chunk metadata — all filter fields at top level
+        "chunk_id": "...",
+        "cfr_citation": "21 CFR § 101.62(a)",
+        "chunk_type": "paragraph",
+        "part_number": "101",
+        "section_number": "101.62",
+        "text": "...",
+        "section_preamble": "...",
+        "defines": None,
+        "is_overflow_chunk": False,
+        "cross_references_internal": ["101.13", "101.14"],
+        # + full hierarchy, paragraph_labels, metrics, overflow_sequence
+    }
+)
+```
+
+**Metadata filters available at search time** — filter by `part_number`, `chapter_number`, `section_number`, `chunk_type`, `subpart_letter`, `source_file`.
+
+### 8.2 Neo4j Schema *(optional — not in active use)*
+
+`backend/ingestion/graph_builder.py` implements Neo4j ingestion. Neo4j is commented out of `requirements.txt` and `run_graph` defaults to `False`. The schema below is correct for future activation:
+
+```cypher
+// Node types: Title, Chapter, Subchapter, Part, Subpart, Section, Chunk, DefinedTerm, ExternalCitation
+// Edge types: CONTAINS (hierarchy), CROSS_REFERENCES, DEFINES_TERM, USES_TERM, CITES, OVERFLOW_CONTINUES
+
+MERGE (s:Section {id: "101.62"})
+SET s.title = "Nutrient content claims for fat...", s.part = "101", s.subpart = "B"
+
+MATCH (a:Section {id:"101.62"}), (b:Section {id:"101.13"})
+MERGE (a)-[:CROSS_REFERENCES]->(b)
+```
+
+**Current replacement**: Cross-reference expansion and definition lookup are performed using Qdrant payload filters (`section_number` and `chunk_type="definition"` filters respectively) in the multi-agent layer.
+
+---
+
+## 9. Layer 4 — Retrieval Engine *(implemented)*
+
+The retrieval engine (`backend/retrieval/retriever.py`) runs in 4 steps. HyDE and the Kanon 2 collection were not implemented.
+
+### Step 1 — Query Encoding
 
 ```python
-def hybrid_search(query: str, top_k: int = 20) -> list[SearchResult]:
-    # Embed query with both models
-    bge_dense_vec = bge_model.encode([query])['dense_vecs'][0]
-    bge_sparse_vec = bge_model.encode([query])['lexical_weights'][0]
-    kanon_dense_vec = kanon_client.embed(query, task="retrieval/query")
-    
-    # Parallel search
-    results_bge_dense = qdrant.search("cfr101_bge_dense", bge_dense_vec, limit=top_k)
-    results_bge_sparse = qdrant.search("cfr101_bge_sparse", bge_sparse_vec, limit=top_k)
-    results_kanon = qdrant.search("cfr101_kanon_dense", kanon_dense_vec, limit=top_k)
-    
-    return results_bge_dense, results_bge_sparse, results_kanon
+output = bge_model.encode([query], return_dense=True, return_sparse=True)
+dense_vec  = output['dense_vecs'][0]       # 1024-dim float list
+sparse_vec = SparseVector(
+    indices=list(output['lexical_weights'][0].keys()),
+    values=list(output['lexical_weights'][0].values()),
+)
 ```
 
-### Step 4 — RRF Rank Fusion + Cross-Encoder Reranking
+Optional `SearchFilters` (part_number, chapter_number, subpart_letter, section_number, chunk_type, source_file) are converted to a Qdrant `Filter` object.
 
-**Reciprocal Rank Fusion** merges the three ranked lists:
+### Step 2 — Qdrant Hybrid Search (single collection)
+
+Both named vectors are searched against the same `FDAComplianceAI` collection:
 
 ```python
-def rrf_fusion(ranked_lists: list[list], k: int = 60) -> list[str]:
-    scores = defaultdict(float)
-    for ranked_list in ranked_lists:
-        for rank, doc in enumerate(ranked_list):
-            scores[doc.chunk_id] += 1.0 / (k + rank + 1)
-    return sorted(scores, key=scores.get, reverse=True)[:30]
+dense_hits  = client.query_points(collection_name, using="dense",  query=dense_vec,  limit=60, query_filter=filter)
+sparse_hits = client.query_points(collection_name, using="sparse", query=sparse_vec, limit=60, query_filter=filter)
 ```
 
-**Cross-encoder reranking** — `bge-reranker-v2-m3` reads the query and each candidate chunk together and produces a true relevance score:
+### Step 3 — RRF Rank Fusion + Cross-Encoder Reranking
+
+**RRF** (k=60) merges the two ranked lists → top-20 candidates:
+
+```python
+scores[chunk_id] += 1.0 / (60 + rank + 1)  # summed over both lists
+```
+
+**Cross-encoder reranking** with `bge-reranker-v2-m3` (normalize=True) → final top-10:
 
 ```python
 from FlagEmbedding import FlagReranker
-
 reranker = FlagReranker('BAAI/bge-reranker-v2-m3', use_fp16=True)
-
-def rerank(query: str, candidates: list[str]) -> list[tuple]:
-    pairs = [(query, chunk_text) for chunk_text in candidates]
-    scores = reranker.compute_score(pairs, normalize=True)
-    return sorted(zip(candidates, scores), key=lambda x: x[1], reverse=True)[:10]
+scores = reranker.compute_score([(query, chunk_text) for ...], normalize=True)
 ```
 
-### Step 5 — Neo4j Cross-Reference Expansion
+### Step 4 — Overflow Expansion
 
-For the top-10 reranked results, run a graph expansion to pull in directly referenced sections:
+For chunks with `overflow_sequence.next_chunk_id`, the retriever follows the chain via Qdrant scroll (max 5 hops) and attaches the continuation text in `overflow_chunks` on each `SearchResult`.
 
-```cypher
-MATCH (s:Section {id: $section_id})-[:REFERENCES]->(related:Section)
-RETURN related.id as ref_id, related.title as ref_title
-LIMIT 5
-```
-
-These related sections are fetched from Qdrant (by `section_id` filter) and added to the context set. This is the step that ensures §101.62 always brings in §101.13 and §101.14.
+**Cross-reference expansion** (replacing Neo4j): The retriever node in the multi-agent layer collects `cross_references_internal` from retrieved chunks and performs targeted Qdrant searches filtered by `section_number` — no graph database required (see Section 10).
 
 ---
 
-## 10. Layer 5 — Multi-Agent Reasoning Layer
+## 10. Layer 5 — Multi-Agent Reasoning Layer *(implemented)*
 
-All agents run inside a **LangGraph** state machine. The state object flows through nodes and conditional edges.
+All agents run inside a **LangGraph** state machine (`backend/agents/`). The state object flows through nodes and conditional edges.
 
-### LangGraph State
+### LangGraph State *(actual `ComplianceState` TypedDict)*
 
 ```python
-from typing import TypedDict, Annotated
-from langgraph.graph import StateGraph
-
-class ComplianceState(TypedDict):
+class ComplianceState(TypedDict, total=False):
     # Input
     query: str
-    uploaded_doc_text: str | None
-    flow: str  # "query" or "document_analysis"
-    
-    # Intermediate
+    intent: str   # "compliance_question" | "definition_lookup" | "comparison" | "general"
+
+    # Planner
     sub_questions: list[str]
+    search_filters: dict   # {part_number, section_number, chapter_number} or {}
+
+    # Retrieval
     retrieved_chunks: list[dict]
-    graph_expanded_chunks: list[dict]
-    extracted_claims: list[dict]     # for document analysis flow
-    
-    # Agent outputs
-    definitions_resolved: dict[str, str]
-    compliance_verdict: dict | None
-    conflicts_detected: list[str]
+    cross_ref_chunks: list[dict]
+
+    # Definition resolver
+    definitions_resolved: dict[str, str]   # term → definition text
+    definition_chunks: list[dict]
+
+    # Synthesizer
     draft_answer: str
-    verified_answer: str
-    
-    # Output
-    final_response: dict
-    citations: list[str]
+    citations: list[dict]          # [{section, title, text_snippet}]
     confidence_score: float
+
+    # Verifier
+    verification_passed: bool
+    verification_issues: list[dict]   # [{claim, issue, detail}]
+    retry_count: int
+
+    # Conflict detector
+    conflicts_detected: bool
+    conflict_flags: list[dict]   # [{sections, description}]
+
+    # Final
+    final_response: dict
+    error: str | None
 ```
 
-### Agent Roles
+`total=False` — each node returns only the keys it updates.
 
-#### Planner Agent
-- Receives the user query
-- Classifies intent: `compliance_question` | `definition_lookup` | `comparison` | `document_analysis`
-- Decomposes complex queries into sub-questions
-- Routes to appropriate specialist agents via LangGraph conditional edges
+### LangGraph Graph Wiring *(backend/agents/graph.py)*
 
-#### Definition Resolver Agent
-- Scans retrieved chunks for regulated terms (e.g., "nutrient content claim", "characterizing flavor", "RACC")
-- Performs a targeted Neo4j + Qdrant lookup for the definition of each term
-- Recursively resolves nested definitions (a definition that itself uses a defined term)
-- Injects resolved definitions into the context before synthesis
+```
+planner → retriever → definition_resolver → synthesizer → verifier
+                                                              │
+                           ┌──────── retry (max 2) ──────────┘
+                           ▼
+                        planner
+                           │ (passes or max retries)
+                           ▼
+                    conflict_detector → END
+```
 
-#### Synthesizer Agent
-- Receives: user query + all retrieved + expanded chunks + resolved definitions
-- Generates a structured draft answer
-- Extracts and formats CFR citations inline
-- Produces a `confidence_score` (0–1) based on how well the retrieved chunks support the answer
+Conditional edge `should_retry`: if `verification_passed=False` and `retry_count < 2`, routes back to planner; otherwise proceeds to conflict_detector.
 
-#### Verifier Agent
-- Cross-checks every factual claim in the draft answer against the source chunks
-- Flags any claim that is not directly supported by retrieved text
-- If a hallucination is detected, sends the state back to the Planner agent (LangGraph loop)
-- Maximum 2 retry loops before outputting with a low-confidence flag
+### LLM Wrapper *(backend/agents/llm.py)*
 
-#### Conflict Detector Agent
-- Checks whether two or more retrieved sections appear to contradict each other
-- Uses a Neo4j query to detect known conflict edges
-- Flags ambiguity in the final response (e.g., "Note: §101.14(e) provides an exception to the above that may apply depending on your specific claim")
+LiteLLM with model fallback chain:
+- `PRIMARY_MODEL` (env) → default `"ollama/llama3.1:8b"`
+- `FALLBACK_MODEL_1` (env) → default `"groq/llama-3.1-70b-versatile"`
+- `FALLBACK_MODEL_2` (env) → default `"openai/gpt-4o"`
+- `OLLAMA_API_BASE` (env) → default `"http://localhost:11434"`
+
+Two functions: `llm_completion(messages, max_tokens, temperature)` and `llm_completion_json(...)` (sets `response_format={"type": "json_object"}`). Every `json.loads()` on LLM output is wrapped in try/except with one retry on parse failure.
+
+### Agent Roles *(all implemented)*
+
+#### Planner Agent (`planner.py`)
+- Input: `query`, optionally `verification_issues` (on retry)
+- Output: `intent`, `sub_questions` (1–4 queries), `search_filters`
+- On retry: appends extra context instructing LLM to find source text for unsupported claims
+
+#### Retriever Node (`retriever_node.py`) — no LLM
+- Input: `query`, `sub_questions`, `search_filters`
+- Output: `retrieved_chunks`, `cross_ref_chunks`
+- Calls `CFRRetriever.search()` for each sub-question (top_k=10, reranker=True), deduplicates by `chunk_id`
+- **Cross-reference expansion** (replaces Neo4j): collects unique `cross_references_internal` section numbers from retrieved chunks → Qdrant search filtered by `section_number` → stored in `cross_ref_chunks`
+
+#### Definition Resolver (`definition_resolver.py`)
+- Input: `query`, `retrieved_chunks`
+- Output: `definitions_resolved`, `definition_chunks`
+- Phase 1 (LLM): identify regulated terms needing formal definitions → JSON `{"terms": [...]}`
+- Phase 2 (Qdrant): search with `chunk_type="definition"` filter and query `"definition of {term}"` → match on `defines` payload field
+
+#### Synthesizer (`synthesizer.py`)
+- Input: `query`, `retrieved_chunks`, `cross_ref_chunks`, `definitions_resolved`
+- Output: `draft_answer`, `citations`, `confidence_score`
+- Builds context: definitions block + top-8 primary chunks + top-4 cross-ref chunks
+- LLM returns JSON with inline `[21 CFR X.Y]` citations, citations list, confidence score (0–1); `max_tokens=2048`
+
+#### Verifier (`verifier.py`)
+- Input: `draft_answer`, `retrieved_chunks`, `cross_ref_chunks`, `retry_count`
+- Output: `verification_passed`, `verification_issues`, `retry_count` (incremented on issues)
+- LLM checks every factual claim against source chunks in strict mode (numbers, thresholds, section refs must appear verbatim)
+
+#### Conflict Detector (`conflict_detector.py`)
+- Input: full state
+- Output: `conflicts_detected`, `conflict_flags`, `final_response`
+- LLM checks for contradictions (general rule vs. exception, conditional applicability)
+- Also assembles the final `final_response` dict returned by `POST /api/query`:
+  ```json
+  {
+    "answer": "...",
+    "citations": [...],
+    "confidence_score": 0.87,
+    "conflicts_detected": false,
+    "conflict_details": [],
+    "disclaimer": "This is for informational purposes only...",
+    "retrieved_sections": ["101.62", "101.13"],
+    "verification_passed": true
+  }
+  ```
 
 ---
 
@@ -921,164 +855,99 @@ class ViolationReport(BaseModel):
 
 ## 13. Layer 6 — Response Synthesis
 
-### LiteLLM Gateway
+### LiteLLM Gateway *(implemented)*
 
-All agent LLM calls route through **LiteLLM**, which provides:
-- Model fallback chain: `Ollama (llama3.1:8b)` → `Groq (llama-3.1-70b)` → `OpenAI (gpt-4o)`
+All agent LLM calls route through **LiteLLM** via `backend/agents/llm.py`:
+- Model fallback chain: `Ollama (llama3.1:8b)` → `Groq (llama-3.1-70b-versatile)` → `OpenAI (gpt-4o)`
+- Configured via environment variables: `PRIMARY_MODEL`, `FALLBACK_MODEL_1`, `FALLBACK_MODEL_2`, `OLLAMA_API_BASE`
 - Single API interface — swap models without changing agent code
-- Automatic retry on rate limits
 
 ```python
 import litellm
 
-# LiteLLM automatically routes based on availability
 response = litellm.completion(
-    model="ollama/llama3.1:8b",  # tries Ollama first
-    messages=[{"role": "user", "content": prompt}],
-    fallbacks=["groq/llama-3.1-70b-versatile", "gpt-4o"],
-    max_tokens=1000
+    model=PRIMARY_MODEL,
+    messages=messages,
+    fallbacks=[FALLBACK_MODEL_1, FALLBACK_MODEL_2],
+    max_tokens=max_tokens,
+    temperature=temperature,
 )
 ```
 
-### Async Processing for Document Analysis
+### Async Processing for Document Analysis *(not yet implemented)*
 
-Document analysis is queued via **Celery + Redis** so the API returns immediately:
-
-```
-POST /api/analyze-document → 202 Accepted → {"job_id": "job_abc123"}
-GET /api/job/job_abc123    → {"status": "processing" | "complete", "result": {...}}
-```
+Celery + Redis async task queue for `POST /api/analyze-document` is **not implemented**. The query endpoint (`POST /api/query`) runs synchronously via the LangGraph pipeline. Document violation analysis (Flow B) is a future phase.
 
 ---
 
-## 14. Observability & Evaluation
+## 14. Observability & Evaluation *(not yet implemented)*
 
-### Langfuse Tracing
+Langfuse tracing, RAGAS evaluation suite, and the user feedback endpoint (`POST /api/feedback`) are **not yet implemented**. These are planned for Phase 5.
 
-Every pipeline step is traced:
-```python
-from langfuse import Langfuse
-
-langfuse = Langfuse()
-
-trace = langfuse.trace(name="compliance_query")
-span = trace.span(name="retrieval_engine")
-# ... retrieval code ...
-span.end(output={"chunks_retrieved": 10, "latency_ms": 340})
-```
-
-Tracked metrics:
-- Query → embedding latency
-- Qdrant search latency + result scores
-- Reranker latency + score distributions
-- Agent execution time per step
-- LLM call latency + token count
-- End-to-end latency
-
-### RAGAS Evaluation Suite
-
-Build a **golden test set** of 100 Q&A pairs:
-
-```python
-from ragas import evaluate
-from ragas.metrics import faithfulness, answer_relevancy, context_recall
-
-results = evaluate(
-    dataset=golden_test_set,
-    metrics=[faithfulness, answer_relevancy, context_recall],
-    llm=evaluation_llm,
-    embeddings=bge_model
-)
-```
-
-Target metrics:
+Target metrics when implemented:
 - Faithfulness > 0.90 (answers grounded in retrieved text)
 - Context Recall > 0.85 (all relevant sections retrieved)
 - Answer Relevance > 0.88
 
-### User Feedback Loop
-
-```
-POST /api/feedback
-{
-  "query_id": "q_abc123",
-  "rating": 1-5,
-  "correct_answer": "optional correction",
-  "missing_citations": ["101.65"]
-}
-```
-
-Feedback is logged to Langfuse and periodically used to:
-- Extend the golden test set
-- Identify weak retrieval spots
-- Fine-tune the BGE-M3 embedding model
+Current observability: standard Python `logging` at INFO level across all modules (`logging.basicConfig` in `main.py`).
 
 ---
 
 ## 15. Technology Stack Summary
 
-### Core Stack
+### Core Stack *(actual implemented dependencies)*
 
-| Layer | Technology | Version | Purpose |
-|-------|-----------|---------|---------|
-| **Ingestion** | `lxml` | 5.x | XML parsing |
-| **Ingestion** | `PyMuPDF` (fitz) | 1.24.x | PDF text extraction |
-| **Ingestion** | `python-docx` | 1.x | DOCX text extraction |
-| **Ingestion** | Tesseract OCR | 5.x | Image OCR |
-| **Chunking** | Custom hierarchical splitter | — | CFR-aware chunking |
-| **Embedding (primary)** | `BGE-M3` (BAAI/bge-m3) | — | Dense + sparse, local |
-| **Embedding (secondary)** | Kanon 2 Embedder | — | Legal-specialized dense, API |
-| **Reranker** | `bge-reranker-v2-m3` | — | Cross-encoder, local |
-| **Vector store** | **Qdrant** | 1.9.x | Dense + sparse vectors |
-| **Graph database** | **Neo4j** | 5.x | Cross-reference graph |
-| **Agent framework** | **LangGraph** | 0.2.x | Stateful multi-agent |
-| **LLM routing** | **LiteLLM** | 1.x | Ollama → Groq → OpenAI |
-| **Local LLM** | Ollama + llama3.1:8b | — | Local inference |
-| **API** | **FastAPI** | 0.115.x | Async REST API |
-| **Task queue** | Celery + Redis | — | Async doc processing |
-| **Observability** | **Langfuse** (self-hosted) | 2.x | Full pipeline tracing |
-| **Evaluation** | **RAGAS** | 0.2.x | RAG quality metrics |
-| **Containerization** | Docker Compose | — | Full local stack |
+| Layer | Technology | Status | Purpose |
+|-------|-----------|--------|---------|
+| **Ingestion** | `xml.etree.ElementTree` (stdlib) | ✅ | XML parsing (replaced lxml) |
+| **Chunking** | Custom paragraph-level chunker | ✅ | CFR-aware chunking in `extractor.py` |
+| **Embedding** | `BGE-M3` (BAAI/bge-m3) via `FlagEmbedding` | ✅ | Dense + sparse, local |
+| **Reranker** | `bge-reranker-v2-m3` via `FlagEmbedding` | ✅ | Cross-encoder, local |
+| **Vector store** | **Qdrant** | ✅ | Single collection, named vectors |
+| **Graph database** | **Neo4j** | ⬜ optional | Off by default; `graph_builder.py` exists |
+| **Agent framework** | **LangGraph** | ✅ | Stateful multi-agent |
+| **LLM routing** | **LiteLLM** | ✅ | Ollama → Groq → OpenAI |
+| **Local LLM** | Ollama + llama3.1:8b | ✅ | Local inference |
+| **API** | **FastAPI** + **uvicorn** | ✅ | Async REST API |
+| **Task queue** | BackgroundTasks + in-memory job dict | ✅ | Celery/Redis dropped; sufficient for current scale |
+| **Document parsing** | PyMuPDF, python-docx | ✅ | PDF + DOCX + plain text (Tesseract/image dropped) |
+| **Observability** | Langfuse | ❌ not implemented | Planned for Phase 5 |
+| **Evaluation** | RAGAS | ❌ not implemented | Planned for Phase 5 |
 
-### Python Dependencies (`requirements.txt`)
+### Python Dependencies (`backend/requirements.txt`) *(actual)*
 
 ```
-# Ingestion
-lxml==5.2.2
-pymupdf==1.24.5
-python-docx==1.1.2
-pytesseract==0.3.13
+# Web framework
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+pydantic>=2.0.0
 
-# ML / Embedding
-FlagEmbedding==1.3.0        # BGE-M3 + reranker
-isaacus==0.1.x              # Kanon 2 API client
-torch==2.3.0
-sentence-transformers==3.1.0
+# Embedding / reranking (BGE-M3 hybrid dense+sparse)
+FlagEmbedding>=1.2.10
+transformers<4.45.0
 
-# Databases
-qdrant-client==1.9.1
-neo4j==5.21.0
+# Vector database
+qdrant-client>=1.9.0
 
-# Agent framework
-langgraph==0.2.x
-langchain==0.3.x
-litellm==1.43.x
+# Graph database (optional — not required for hybrid search pipeline)
+# neo4j>=5.0.0
 
-# API
-fastapi==0.115.0
-uvicorn==0.30.1
-celery==5.4.0
-redis==5.0.8
+# Multi-agent reasoning (LangGraph + LiteLLM)
+langgraph>=0.2.0
+langchain-core>=0.3.0
+litellm>=1.40.0
 
-# Evaluation
-ragas==0.2.x
-langfuse==2.x
+# Document parsing (Phase 4: Document Violation Analysis)
+pymupdf>=1.24.0
+python-docx>=1.1.0
+python-multipart>=0.0.9
 
 # Utilities
-pydantic==2.8.x
-python-multipart==0.0.9     # file uploads
-httpx==0.27.0
+tqdm>=4.0.0
+python-dotenv>=1.0.0
 ```
+
+**Runtime**: Python 3.13, virtual environment at `backend/venv/`
 
 ---
 
@@ -1141,58 +1010,55 @@ CREATE INDEX section_part IF NOT EXISTS
 
 ## 17. Implementation Phasing
 
-### Phase 1 — Core RAG (Weeks 1–2)
+### Phase 1 — Core RAG ✅ Complete
 *Goal: working end-to-end query flow with basic retrieval*
 
-- [ ] Set up Docker Compose (Qdrant + Neo4j + Redis)
-- [ ] Write eCFR XML downloader and parser (`ingestion/xml_parser.py`)
-- [ ] Implement contextual chunker with overlap
-- [ ] Set up BGE-M3 embedding (local, dense only first)
-- [ ] Index CFR Part 101 into Qdrant dense collection
-- [ ] Build basic FastAPI `/api/query` endpoint
-- [ ] Implement single-model dense retrieval
-- [ ] Wire up LiteLLM with Ollama + Groq fallback
-- [ ] Build simple synthesizer agent (no LangGraph yet)
-- [ ] Manual testing of 20 questions
+- [x] Write CFR XML parser + paragraph-level chunker (`ingestion/extractor.py`)
+- [x] Set up BGE-M3 embedding with dense + sparse named vectors in a single Qdrant collection
+- [x] Index all 59,105 chunks into Qdrant `FDAComplianceAI` collection
+- [x] Build FastAPI server with `/api/ingest`, `/api/search`, `/api/chunks/{id}`, `/health`
+- [x] Implement single-model dense+sparse retrieval (`retrieval/retriever.py`)
+- [x] Wire up LiteLLM with Ollama → Groq → OpenAI fallback chain
 
-### Phase 2 — Hybrid Retrieval + Reranking (Week 3)
+### Phase 2 — Hybrid Retrieval + Reranking ✅ Complete
 *Goal: significantly improve retrieval quality*
 
-- [ ] Add BGE-M3 sparse (SPLADE) collection to Qdrant
-- [ ] Add Kanon 2 Embedder collection (via API)
-- [ ] Implement RRF rank fusion across 3 result lists
-- [ ] Integrate `bge-reranker-v2-m3` cross-encoder
-- [ ] Add HyDE query expansion
-- [ ] Build Neo4j graph (section nodes + cross-reference edges)
-- [ ] Implement graph expansion step in retrieval pipeline
-- [ ] Run RAGAS baseline evaluation (golden test set v1)
+- [x] BGE-M3 sparse + dense in single Qdrant collection with named vectors
+- [x] RRF rank fusion (k=60) across dense and sparse result lists
+- [x] `bge-reranker-v2-m3` cross-encoder reranking (top-10 final)
+- [x] Overflow chunk expansion (follow `next_chunk_id` chain, max 5 hops)
+- [x] Qdrant-based cross-reference expansion (replaces Neo4j graph)
+- [ ] HyDE query expansion — *dropped (replaced by Planner query decomposition)*
+- [ ] Kanon 2 Embedder — *dropped (BGE-M3 sufficient for current scope)*
+- [ ] Neo4j graph — *optional, off by default*
+- [ ] RAGAS baseline evaluation — *pending Phase 5*
 
-### Phase 3 — Multi-Agent System (Week 4)
+### Phase 3 — Multi-Agent System ✅ Complete
 *Goal: production-quality reasoning and citation*
 
-- [ ] Set up LangGraph state machine
-- [ ] Implement Planner agent (query decomposition + intent routing)
-- [ ] Implement Definition Resolver agent (recursive term lookup)
-- [ ] Implement Synthesizer agent (structured output + citations)
-- [ ] Implement Verifier agent (hallucination detection + retry loop)
-- [ ] Implement Conflict Detector agent (Neo4j conflict query)
-- [ ] Wire all agents into LangGraph graph with conditional edges
-- [ ] End-to-end testing with 50 compliance questions
+- [x] LangGraph `StateGraph` with `ComplianceState` TypedDict
+- [x] Planner agent — query decomposition + intent classification + search filter extraction
+- [x] Retriever node — sub-question search + Qdrant cross-reference expansion (no LLM)
+- [x] Definition Resolver agent — term identification (LLM) + Qdrant definition lookup
+- [x] Synthesizer agent — answer generation with inline CFR citations (max_tokens=2048)
+- [x] Verifier agent — hallucination detection + retry signal (max 2 retries)
+- [x] Conflict Detector agent — cross-section conflict detection + final response assembly
+- [x] `POST /api/query` endpoint wired to `query_graph.invoke()`
 
-### Phase 4 — Document Violation Analysis Flow (Weeks 5–6)
+### Phase 4 — Document Violation Analysis Flow ✅ Complete
 *Goal: full document upload and analysis pipeline*
 
-- [ ] Build Document Parser Agent (PDF + DOCX + image)
-- [ ] Build Claim Extractor Agent (LLM structured output)
-- [ ] Build Regulation Mapper Agent (per-claim hybrid search)
-- [ ] Build Gap Analyzer Agent (reverse pass over all CFR sections)
-- [ ] Build Violation Classifier Agent (LLM verification + severity scoring)
-- [ ] Build structured `ViolationReport` output schema
-- [ ] Set up Celery async task queue for document processing
-- [ ] Build `POST /api/analyze-document` and `GET /api/job/{id}` endpoints
-- [ ] Test with 10 real food label documents (manually verify outputs)
+- [x] Build Document Parser (PDF via PyMuPDF + DOCX via python-docx + plain text; Tesseract/image dropped)
+- [x] Build Claim Extractor node (LLM extracts claim_text, claim_type, location_hint)
+- [x] Build Regulation Mapper node (per-claim CFRRetriever hybrid search, top-5 chunks with reranking)
+- [x] Build Violation Classifier node (per-claim LLM compliance check + single-pass gap analysis for missing required elements — Gap Analyzer folded in)
+- [x] Build Report Builder node (assembles ViolationReport: overall_status, severity_summary, sorted violations[])
+- [x] Build LangGraph `DocumentAnalysisState` + StateGraph with error short-circuit routing
+- [x] Async job store via BackgroundTasks + in-memory `dict[job_id → status/result]` (Celery/Redis dropped)
+- [x] `POST /api/analyze-document` (file upload → job_id) and `GET /api/jobs/{job_id}` (poll) endpoints
+- [x] Frontend Next.js route handler polls job until completion and transforms ViolationReport → AnalysisResponse schema
 
-### Phase 5 — Observability, Evaluation & Fine-Tuning (Weeks 7–8)
+### Phase 5 — Observability, Evaluation & Fine-Tuning ⬜ Pending
 *Goal: measure quality, improve, and make the system trustworthy*
 
 - [ ] Deploy self-hosted Langfuse (Docker)
@@ -1201,9 +1067,8 @@ CREATE INDEX section_part IF NOT EXISTS
 - [ ] Run full RAGAS evaluation suite
 - [ ] Collect 500 query-passage pairs for BGE-M3 fine-tuning
 - [ ] Fine-tune BGE-M3 with `sentence-transformers` MultipleNegativesRankingLoss
-- [ ] Add user feedback endpoint
+- [ ] Add `POST /api/feedback` endpoint
 - [ ] Performance optimization (async retrieval, batch embedding)
-- [ ] Final load testing
 
 ---
 
@@ -1239,73 +1104,73 @@ BGE-M3 runs on CPU but indexing 300 sections takes ~2–5 minutes on CPU vs ~15 
 
 ---
 
-## 19. Directory Structure
+## 19. Directory Structure *(actual)*
 
 ```
-fda-compliance-rag/
-├── docker-compose.yml          # Qdrant + Neo4j + Redis + Langfuse + API
-├── requirements.txt
-├── .env.example
+FDAComplianceAI/
+├── implementation_plan.md      # This document
+├── multiagent_plan.txt         # Multi-agent layer design notes (implemented)
+├── retrieval_plan.txt          # Retrieval layer design notes (implemented)
 │
-├── ingestion/
-│   ├── xml_parser.py           # eCFR XML → section dicts
-│   ├── chunker.py              # Contextual hierarchical chunker
-│   ├── embedder.py             # BGE-M3 + Kanon 2 embedding
-│   ├── graph_builder.py        # Neo4j ingestion
-│   ├── qdrant_indexer.py       # Qdrant upsert (3 collections)
-│   └── run_ingestion.py        # Orchestrates full ingestion pipeline
+├── backend/
+│   ├── main.py                 # FastAPI app — all endpoints
+│   ├── config.py               # Settings (env vars, Qdrant URL, CORS origins)
+│   ├── requirements.txt        # Python dependencies
+│   ├── venv/                   # Python 3.13 virtual environment
+│   │
+│   ├── ingestion/
+│   │   ├── __init__.py
+│   │   ├── extractor.py        # CFR XML → paragraph-level JSON chunks (59,105 chunks)
+│   │   ├── embedder.py         # BGE-M3 dense+sparse → Qdrant "FDAComplianceAI" collection
+│   │   ├── pipeline.py         # Orchestrates extract → embed (graph optional)
+│   │   └── graph_builder.py    # Neo4j ingestion (optional, off by default)
+│   │
+│   ├── retrieval/
+│   │   ├── __init__.py
+│   │   └── retriever.py        # CFRRetriever: hybrid search + RRF + reranker + overflow
+│   │
+│   ├── agents/
+│   │   ├── __init__.py
+│   │   ├── state.py            # ComplianceState TypedDict
+│   │   ├── llm.py              # LiteLLM wrapper (Ollama → Groq → Gemini)
+│   │   ├── planner.py          # Intent classification + query decomposition
+│   │   ├── retriever_node.py   # Qdrant search + cross-ref expansion (no LLM)
+│   │   ├── definition_resolver.py  # Term identification + Qdrant definition lookup
+│   │   ├── synthesizer.py      # Answer generation with inline CFR citations
+│   │   ├── verifier.py         # Hallucination detection + retry signal
+│   │   ├── conflict_detector.py    # Conflict detection + final response assembly
+│   │   └── graph.py            # LangGraph StateGraph wiring + compile
+│   │
+│   ├── document_analysis/
+│   │   ├── __init__.py
+│   │   ├── state.py            # DocumentAnalysisState TypedDict
+│   │   ├── parser.py           # PDF (PyMuPDF) + DOCX + plain text extraction
+│   │   ├── claim_extractor.py  # LangGraph node: LLM claim extraction
+│   │   ├── regulation_mapper.py # LangGraph node: per-claim CFR hybrid search
+│   │   ├── violation_classifier.py # LangGraph node: compliance check + gap analysis
+│   │   ├── report_builder.py   # LangGraph node: assemble ViolationReport
+│   │   └── graph.py            # LangGraph StateGraph + error short-circuit routing
+│   │
+│   └── data/
+│       ├── cfr_xml/            # 10 CFR XML files (Title 21, vols 1–9)
+│       └── chunks/
+│           └── cfr_chunks.json # Extractor output (generated; ~59,105 chunks)
 │
-├── retrieval/
-│   ├── hybrid_search.py        # Multi-collection Qdrant search
-│   ├── rrf_fusion.py           # Reciprocal Rank Fusion
-│   ├── reranker.py             # bge-reranker-v2-m3 cross-encoder
-│   ├── hyde.py                 # Hypothetical Document Embedding
-│   ├── graph_expander.py       # Neo4j 1-hop expansion
-│   └── retrieval_pipeline.py   # Orchestrates all retrieval steps
-│
-├── agents/
-│   ├── state.py                # LangGraph ComplianceState TypedDict
-│   ├── planner.py              # Query decomposition + intent routing
-│   ├── definition_resolver.py  # Recursive term definition lookup
-│   ├── synthesizer.py          # Draft answer generation + citations
-│   ├── verifier.py             # Hallucination detection + retry
-│   ├── conflict_detector.py    # Cross-section conflict detection
-│   └── graph.py                # LangGraph graph assembly
-│
-├── document_analysis/
-│   ├── parser.py               # PDF + DOCX + image text extraction
-│   ├── claim_extractor.py      # LLM-based claim extraction
-│   ├── regulation_mapper.py    # Per-claim hybrid search
-│   ├── gap_analyzer.py         # Reverse pass over CFR corpus
-│   ├── violation_classifier.py # LLM verification + severity scoring
-│   └── report_builder.py       # ViolationReport assembly
-│
-├── api/
-│   ├── main.py                 # FastAPI app
-│   ├── routers/
-│   │   ├── query.py            # POST /api/query
-│   │   ├── document.py         # POST /api/analyze-document
-│   │   ├── jobs.py             # GET /api/job/{job_id}
-│   │   └── feedback.py         # POST /api/feedback
-│   ├── schemas.py              # Pydantic request/response models
-│   └── celery_app.py           # Celery task definitions
-│
-├── evaluation/
-│   ├── golden_test_set.json    # 100 Q&A pairs with citations
-│   ├── run_ragas.py            # RAGAS evaluation runner
-│   └── generate_test_pairs.py  # Script to semi-automate test pair gen
-│
-├── scripts/
-│   ├── download_ecfr.sh        # Download CFR Part 101 XML
-│   ├── setup_neo4j.cypher      # Neo4j schema + constraints
-│   └── setup_qdrant.py         # Create Qdrant collections
-│
-└── notebooks/
-    ├── 01_explore_cfr_xml.ipynb
-    ├── 02_chunking_experiments.ipynb
-    ├── 03_embedding_comparison.ipynb
-    └── 04_retrieval_quality_analysis.ipynb
+└── frontend/                   # Next.js frontend (Vercel deployment)
+    └── src/
+        ├── app/
+        │   ├── api/
+        │   │   ├── query/route.ts           # Proxy → POST /api/query
+        │   │   └── analyze-document/route.ts # Proxy → POST /api/analyze-document + job polling
+        │   ├── chat/page.tsx               # Compliance Q&A chat UI
+        │   └── analyzer/page.tsx           # Document upload + violation report UI
+        ├── lib/api.ts                      # Client API helpers
+        └── types/index.ts                  # Shared TypeScript interfaces
 ```
+
+**Not yet created** (planned for Phase 5):
+- `evaluation/` — RAGAS golden test set + evaluation runner
+- `docker-compose.yml` — full local stack
 
 ---
 
@@ -1317,13 +1182,13 @@ fda-compliance-rag/
 | E5-large-v2 | Low-Medium | Low-Medium | ✅ | ❌ | 512 | ❌ Ruled out |
 | PubMedBERT | Low | Very High | ✅ | ❌ | 512 | ❌ Wrong domain fit |
 | BiomedBERT | Low | Very High | ✅ | ❌ | 512 | ❌ Wrong domain fit |
-| BGE-M3 | Medium-High | Medium | ✅ | ✅ | 8,192 | ✅ **Primary local model** |
-| Kanon 2 Embedder | Very High (91.48 NDCG@10 regulatory) | Low | API | ❌ | 16,384 | ✅ **Secondary legal model** |
+| BGE-M3 | Medium-High | Medium | ✅ | ✅ | 8,192 | ✅ **Implemented — sole model** |
+| Kanon 2 Embedder | Very High (91.48 NDCG@10 regulatory) | Low | API | ❌ | 16,384 | ⬜ Not implemented (future upgrade) |
 | Qwen3-Embedding-8B | High | Medium | ✅ (GPU) | ❌ | 8,192 | ⚠️ Upgrade path (GPU required) |
 
-**Why not PubMedBERT/BiomedBERT**: These models excel at clinical notes and PubMed abstracts but are completely blind to regulatory legal structure. The biomedical terminology in CFR Part 101 (vitamin/mineral thresholds, fatty acid definitions) is representable by BGE-M3 after domain fine-tuning. Using PubMedBERT would sacrifice all legal structural understanding for marginal gains on nutrient terminology.
+**Why BGE-M3 alone**: The dual-model approach with Kanon 2 was deferred — it adds an external API dependency and cost. BGE-M3 + `bge-reranker-v2-m3` cross-encoder reranking provides sufficient retrieval quality for the current scope. The cross-encoder reranker at the end of the pipeline compensates significantly for single-model retrieval gaps by doing a full (query, chunk) relevance score pass.
 
-**The dual-model strategy rationale**: BGE-M3 covers the structural regulatory language and provides BM25-equivalent sparse retrieval. Kanon 2 provides state-of-the-art regulatory semantic understanding. Their combination via RRF fusion, followed by a cross-encoder reranker that reads full (query, chunk) pairs, gives the best of all worlds — without requiring a GPU for inference on the primary model.
+**Kanon 2 upgrade path**: When the system needs higher regulatory retrieval precision, adding Kanon 2 vectors as a third named vector in the existing `FDAComplianceAI` collection (with RRF fusion across 3 lists) is straightforward — no schema rebuild needed.
 
 ---
 
