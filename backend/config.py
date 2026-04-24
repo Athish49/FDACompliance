@@ -1,9 +1,23 @@
 """
-Application configuration loaded from `backend/.env`.
+Application configuration — presence-based, no ENVIRONMENT switch.
 
-Set ``ENVIRONMENT`` to ``local`` (default) or ``cloud`` to select URL defaults,
-LLM chain, and Qdrant target. Values are read from the environment with
-`python-dotenv` (`.env` next to this file) and are available via `get_settings()`.
+Decision logic (driven entirely by which values are set/uncommented in .env):
+
+  URLs
+    FRONTEND_URL / BACKEND_URL  — used as-is; localhost → local dev,
+                                  Vercel/Render URL → production
+  Qdrant
+    Whichever QDRANT_URL is uncommented is used.
+    QDRANT_API_KEY is optional (required only by Qdrant Cloud).
+
+  LLM chain (tried left-to-right by LiteLLM)
+    GROQ_API_KEY present   → groq/<GROQ_MODEL> added first
+    GEMINI_API_KEY present → gemini/<GEMINI_MODEL> added next
+    No cloud keys present  → Ollama only (OLLAMA_MODEL @ OLLAMA_BASE_URL)
+    Ollama is always added as final fallback when at least one cloud key exists.
+
+The ENVIRONMENT variable is accepted but ignored — kept only for backwards
+compatibility with existing .env files.
 """
 
 from __future__ import annotations
@@ -22,104 +36,78 @@ load_dotenv(_env_path)
 EnvironmentName = Literal["local", "cloud"]
 
 
-def _norm_env() -> EnvironmentName:
-    raw = (os.getenv("ENVIRONMENT") or "local").strip().lower()
-    if raw == "cloud":
-        return "cloud"
-    return "local"
+def _is_local_url(url: str) -> bool:
+    return "localhost" in url or "127.0.0.1" in url or "0.0.0.0" in url
 
 
 @dataclass(frozen=True)
 class Settings:
-    """Resolved settings for the current ``ENVIRONMENT``."""
+    """Resolved settings derived purely from which .env values are present."""
 
-    environment: EnvironmentName
+    environment: EnvironmentName        # informational only (not used for branching)
     frontend_url: str
     backend_url: str
     qdrant_url: str
     qdrant_api_key: str | None
     qdrant_collection: str = "FDAComplianceAI"
-    # LLM: each entry is (litellm model id, ollama_api_base or None)
+    # Each entry: (litellm model id, ollama_api_base or None)
     llm_model_chain: tuple[tuple[str, str | None], ...] = field(default_factory=tuple)
     ollama_base_url: str = "http://localhost:11434"
-    # Extra CORS origins (comma-separated in env) in addition to frontend_url
     cors_origins: tuple[str, ...] = ()
 
     @staticmethod
     def from_env() -> "Settings":
-        env = _norm_env()
-        if env == "local":
-            return Settings._from_local()
-        return Settings._from_cloud()
-
-    @staticmethod
-    def _from_local() -> "Settings":
+        # ── URLs ─────────────────────────────────────────────────────────────
         frontend = (os.getenv("FRONTEND_URL") or "http://localhost:3000").strip().rstrip("/")
-        backend = (os.getenv("BACKEND_URL") or "http://localhost:8000").strip().rstrip("/")
-        ollama_base = (os.getenv("OLLAMA_BASE_URL") or "http://localhost:11434").strip().rstrip("/")
-        model = (os.getenv("OLLAMA_MODEL") or "llama3.2:3b").strip()
-        if not model.startswith("ollama/"):
-            model = f"ollama/{model}"
+        backend  = (os.getenv("BACKEND_URL")  or "http://localhost:8000").strip().rstrip("/")
+
+        # ── Qdrant ───────────────────────────────────────────────────────────
+        # Whichever QDRANT_URL is uncommented wins; fallback to local.
         qdrant_url = (os.getenv("QDRANT_URL") or "http://localhost:6333").strip().rstrip("/")
         qdrant_key = (os.getenv("QDRANT_API_KEY") or "").strip() or None
         qdrant_collection = (os.getenv("QDRANT_COLLECTION") or "FDAComplianceAI").strip()
-        extras = _split_origins(os.getenv("CORS_EXTRA_ORIGINS"))
-        origins = _unique_strs((frontend, *extras))
-        return Settings(
-            environment="local",
-            frontend_url=frontend,
-            backend_url=backend,
-            qdrant_url=qdrant_url,
-            qdrant_api_key=qdrant_key,
-            qdrant_collection=qdrant_collection,
-            llm_model_chain=((model, ollama_base),),
-            ollama_base_url=ollama_base,
-            cors_origins=origins,
-        )
 
-    @staticmethod
-    def _from_cloud() -> "Settings":
-        frontend = (os.getenv("FRONTEND_URL") or "").strip().rstrip("/")
-        backend = (os.getenv("BACKEND_URL") or "").strip().rstrip("/")
-        if not frontend or not backend:
-            raise ValueError(
-                "Cloud mode requires FRONTEND_URL and BACKEND_URL (e.g. Vercel and Render bases)."
-            )
-        qdrant_url = (os.getenv("QDRANT_URL") or "").strip().rstrip("/")
-        if not qdrant_url:
-            raise ValueError("Cloud mode requires QDRANT_URL (Qdrant Cloud cluster URL).")
-        qdrant_key = (os.getenv("QDRANT_API_KEY") or "").strip() or None
-        if not qdrant_key:
-            raise ValueError("Cloud mode requires QDRANT_API_KEY for Qdrant Cloud.")
-        qdrant_collection = (os.getenv("QDRANT_COLLECTION") or "FDAComplianceAI").strip()
-
-        groq_model = (os.getenv("GROQ_MODEL") or "groq/llama-3.1-8b-instant").strip()
-        if not groq_model.startswith("groq/"):
-            groq_model = f"groq/{groq_model}"
-        gemini_model = (os.getenv("GEMINI_MODEL") or "gemini/gemini-2.0-flash").strip()
-        if not gemini_model.startswith("gemini/"):
-            gemini_model = f"gemini/{gemini_model}"
-
-        # LiteLLM reads these from the process environment for Groq / Gemini
-        gk = (os.getenv("GROQ_API_KEY") or "").strip()
-        gem = (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip()
-        if gk:
-            os.environ.setdefault("GROQ_API_KEY", gk)
-        if gem:
-            os.environ.setdefault("GEMINI_API_KEY", gem)
-            os.environ.setdefault("GOOGLE_API_KEY", gem)
-
+        # ── Ollama (always configured; used as fallback) ──────────────────────
         ollama_base = (os.getenv("OLLAMA_BASE_URL") or "http://localhost:11434").strip().rstrip("/")
-        extras = _split_origins(os.getenv("CORS_EXTRA_ORIGINS"))
+        ollama_raw  = (os.getenv("OLLAMA_MODEL") or "llama3.2:3b").strip()
+        ollama_model = ollama_raw if ollama_raw.startswith("ollama/") else f"ollama/{ollama_raw}"
+
+        # ── LLM chain: add cloud providers whose keys are present ─────────────
+        chain: list[tuple[str, str | None]] = []
+
+        groq_key = (os.getenv("GROQ_API_KEY") or "").strip()
+        if groq_key:
+            os.environ["GROQ_API_KEY"] = groq_key
+            groq_raw = (os.getenv("GROQ_MODEL") or "llama-3.1-8b-instant").strip()
+            groq_model = groq_raw if groq_raw.startswith("groq/") else f"groq/{groq_raw}"
+            chain.append((groq_model, None))
+
+        gemini_key = (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip()
+        if gemini_key:
+            os.environ["GEMINI_API_KEY"] = gemini_key
+            os.environ["GOOGLE_API_KEY"] = gemini_key
+            gemini_raw = (os.getenv("GEMINI_MODEL") or "gemini-2.0-flash").strip()
+            gemini_model = gemini_raw if gemini_raw.startswith("gemini/") else f"gemini/{gemini_raw}"
+            chain.append((gemini_model, None))
+
+        # Ollama: sole provider when no cloud keys, otherwise final fallback
+        chain.append((ollama_model, ollama_base))
+
+        # ── CORS ─────────────────────────────────────────────────────────────
+        extras  = _split_origins(os.getenv("CORS_EXTRA_ORIGINS"))
         origins = _unique_strs((frontend, *extras))
+
+        # Derive informational label (not used for any branching)
+        env_label: EnvironmentName = "local" if _is_local_url(frontend) else "cloud"
+
         return Settings(
-            environment="cloud",
+            environment=env_label,
             frontend_url=frontend,
             backend_url=backend,
             qdrant_url=qdrant_url,
             qdrant_api_key=qdrant_key,
             qdrant_collection=qdrant_collection,
-            llm_model_chain=((groq_model, None), (gemini_model, None)),
+            llm_model_chain=tuple(chain),
             ollama_base_url=ollama_base,
             cors_origins=origins,
         )
@@ -147,6 +135,6 @@ def get_settings() -> Settings:
 
 
 def reload_settings() -> Settings:
-    """Clear cache (e.g. after tests). Not used in production."""
+    """Clear cache (e.g. after tests)."""
     get_settings.cache_clear()
     return get_settings()

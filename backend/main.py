@@ -9,7 +9,7 @@ Endpoints:
   POST /api/search                — hybrid search over CFR chunks
   GET  /api/chunks/{id}           — fetch a single chunk by ID
   POST /api/query                 — multi-agent compliance reasoning
-  POST /api/analyze-document      — Phase 4: document violation analysis (async)
+  POST /api/analyze-document      — document violation analysis (async)
   GET  /api/jobs/{job_id}         — poll document analysis job status
   GET  /health                    — liveness probe
 
@@ -33,8 +33,6 @@ from config import get_settings
 from ingestion.pipeline import (
     EmbedderConfig,
     PipelineConfig,
-    PipelineResult,
-    StepStatus,
     run_pipeline,
 )
 
@@ -108,9 +106,8 @@ def _get_retriever():
 class IngestRequest(BaseModel):
     """Options for a pipeline run. All fields are optional — defaults are used if omitted."""
 
-    run_extract: bool = Field(True,  description="Run the XML extraction step")
-    run_embed:   bool = Field(True,  description="Run the Qdrant embedding step")
-    run_graph:   bool = Field(False, description="Run the Neo4j graph building step")
+    run_extract: bool = Field(True, description="Run the XML extraction step")
+    run_embed:   bool = Field(True, description="Run the Qdrant embedding step")
 
     skip_extract_if_exists: bool = Field(
         False,
@@ -231,7 +228,6 @@ def trigger_ingest(
     config = PipelineConfig(
         run_extract=request.run_extract,
         run_embed=request.run_embed,
-        run_graph=request.run_graph,
         skip_extract_if_exists=request.skip_extract_if_exists,
         embedder_config=EmbedderConfig(
             qdrant_url=request.qdrant_url,
@@ -263,24 +259,6 @@ def ingest_status():
     if _last_result is None:
         return {"status": "no_run"}
     return _last_result
-
-
-@app.post("/api/ingest/extract-only", tags=["ingestion"])
-def trigger_extract_only(background_tasks: BackgroundTasks):
-    """
-    Convenience endpoint: run only the XML extraction step.
-    Useful for refreshing the chunks JSON without re-embedding.
-    """
-    global _pipeline_running
-
-    with _pipeline_lock:
-        if _pipeline_running:
-            raise HTTPException(status_code=409, detail="Pipeline already running.")
-        _pipeline_running = True
-
-    config = PipelineConfig(run_extract=True, run_embed=False, run_graph=False)
-    background_tasks.add_task(_run_pipeline_background, config)
-    return {"message": "Extraction step started."}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

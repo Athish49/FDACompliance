@@ -1,14 +1,12 @@
 """
 Ingestion Pipeline Orchestrator
 ================================
-Ties together extractor → embedder → graph_builder into a single
-sequential pipeline.  Called from main.py when the /api/ingest endpoint
-is triggered.
+Ties together extractor → embedder into a single sequential pipeline.
+Called from main.py when the /api/ingest endpoint is triggered.
 
 Step flow:
   1. EXTRACT  — parse all CFR XML files → cfr_chunks.json
   2. EMBED    — embed chunks → Qdrant vector collection
-  3. GRAPH    — build lexical graph → Neo4j
 
 Each step is independently runnable and the pipeline can be resumed
 from any step (e.g. skip extraction if chunks JSON already exists).
@@ -21,7 +19,7 @@ import time
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 from .extractor import extract_all
 from .embedder import EmbedderConfig, embed_and_store
@@ -42,14 +40,12 @@ class PipelineConfig:
     # Which steps to run
     run_extract: bool = True
     run_embed:   bool = True
-    run_graph:   bool = False
 
     # Skip extraction if output file already exists (resume mode)
     skip_extract_if_exists: bool = False
 
-    # Sub-configs (use defaults if not provided)
+    # Sub-config (use defaults if not provided)
     embedder_config: Optional[EmbedderConfig] = None
-    graph_config:    Optional[Any]             = None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -106,7 +102,7 @@ class PipelineResult:
 
 def run_pipeline(config: Optional[PipelineConfig] = None) -> PipelineResult:
     """
-    Execute the full ingestion pipeline according to *config*.
+    Execute the ingestion pipeline according to *config*.
 
     Returns a PipelineResult with per-step status and results.
     The result is safe to serialise to JSON for API responses.
@@ -125,8 +121,8 @@ def run_pipeline(config: Optional[PipelineConfig] = None) -> PipelineResult:
     logger.info("CFR Ingestion Pipeline starting")
     logger.info("  xml_dir          : %s", config.xml_dir)
     logger.info("  chunks_output    : %s", config.chunks_output_path)
-    logger.info("  steps            : extract=%s embed=%s graph=%s",
-                config.run_extract, config.run_embed, config.run_graph)
+    logger.info("  steps            : extract=%s  embed=%s",
+                config.run_extract, config.run_embed)
     logger.info("=" * 60)
 
     # ── Step 1: EXTRACT ───────────────────────────────────────────────────
@@ -167,7 +163,7 @@ def run_pipeline(config: Optional[PipelineConfig] = None) -> PipelineResult:
             extract_step.error = str(exc)
             extract_step.duration_seconds = time.time() - step_start
             logger.exception("[EXTRACT] Failed: %s", exc)
-            # Stop pipeline on extraction failure — downstream steps need chunks
+            # Stop pipeline — downstream embed step needs chunks
             result.completed_at = datetime.now(timezone.utc).isoformat()
             result.total_duration_seconds = time.time() - pipeline_start
             result.success = False
@@ -183,18 +179,30 @@ def run_pipeline(config: Optional[PipelineConfig] = None) -> PipelineResult:
     else:
         embed_step.status = StepStatus.RUNNING
         step_start = time.time()
+
+        # Orphan cleanup is safe only when we have fresh source data —
+        # i.e., extraction ran successfully in this same pipeline invocation.
+        # If embedding against a potentially stale chunks file, skip cleanup
+        # to avoid deleting valid points that simply aren't in the old file.
+        fresh_source = extract_step.status == StepStatus.DONE
+
         try:
             logger.info("[EMBED] Starting embedding and Qdrant upsert …")
             embed_result = embed_and_store(
                 chunks_path=config.chunks_output_path,
                 config=config.embedder_config,
+                cleanup_orphans=fresh_source,
             )
             embed_step.status = StepStatus.DONE
             embed_step.result = embed_result
             embed_step.duration_seconds = time.time() - step_start
             logger.info(
-                "[EMBED] Done — %d points upserted in %.1fs",
-                embed_result["total_upserted"],
+                "[EMBED] Done — %d upserted, %d skipped (unchanged), "
+                "%d failed batches, %d orphans deleted, in %.1fs",
+                embed_result["upserted"],
+                embed_result["skipped_unchanged"],
+                embed_result["failed_batches"],
+                embed_result["deleted_orphans"],
                 embed_step.duration_seconds,
             )
         except Exception as exc:
@@ -202,39 +210,6 @@ def run_pipeline(config: Optional[PipelineConfig] = None) -> PipelineResult:
             embed_step.error = str(exc)
             embed_step.duration_seconds = time.time() - step_start
             logger.exception("[EMBED] Failed: %s", exc)
-            # Continue to graph step even if embedding fails
-
-    # ── Step 3: GRAPH ─────────────────────────────────────────────────────
-    graph_step = StepResult(name="graph")
-    result.steps.append(graph_step)
-
-    if not config.run_graph:
-        graph_step.status = StepStatus.SKIPPED
-        logger.info("[GRAPH] Skipped (run_graph=False)")
-    else:
-        graph_step.status = StepStatus.RUNNING
-        step_start = time.time()
-        try:
-            from .graph_builder import build_graph
-
-            logger.info("[GRAPH] Starting Neo4j graph build …")
-            graph_result = build_graph(
-                chunks_path=config.chunks_output_path,
-                config=config.graph_config,
-            )
-            graph_step.status = StepStatus.DONE
-            graph_step.result = graph_result
-            graph_step.duration_seconds = time.time() - step_start
-            logger.info(
-                "[GRAPH] Done — %d chunks in %.1fs",
-                graph_result["total_chunks_written"],
-                graph_step.duration_seconds,
-            )
-        except Exception as exc:
-            graph_step.status = StepStatus.FAILED
-            graph_step.error = str(exc)
-            graph_step.duration_seconds = time.time() - step_start
-            logger.exception("[GRAPH] Failed: %s", exc)
 
     # ── Finalise ──────────────────────────────────────────────────────────
     failed_steps = [s for s in result.steps if s.status == StepStatus.FAILED]
