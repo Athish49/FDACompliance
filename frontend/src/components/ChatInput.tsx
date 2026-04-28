@@ -40,7 +40,7 @@ export default function ChatInput({
   };
 
   return (
-    <div className="flex items-end gap-2 bg-white border border-sand-300 rounded-2xl px-4 py-3 shadow-sm focus-within:border-forest/40 focus-within:shadow-md transition-all">
+    <div className="flex items-end gap-2 bg-white border border-sand-300 rounded-2xl px-4 py-3 shadow-sm focus-within:border-bark-900/25 focus-within:shadow-md transition-all">
       <textarea
         ref={textareaRef}
         value={value}
@@ -54,7 +54,7 @@ export default function ChatInput({
       <button
         onClick={handleSubmit}
         disabled={!value.trim() || disabled}
-        className="w-8 h-8 rounded-full bg-forest text-white flex items-center justify-center shrink-0 hover:bg-forest-dark disabled:opacity-30 disabled:hover:bg-forest transition-colors"
+        className="w-8 h-8 rounded-xl bg-bark-900 text-white flex items-center justify-center shrink-0 hover:bg-bark-800 disabled:opacity-25 disabled:hover:bg-bark-900 transition-colors"
       >
         <ArrowUp className="w-4 h-4" />
       </button>

@@ -60,18 +60,18 @@ export default function FileUpload({
   if (selectedFile) {
     return (
       <motion.div
-        initial={{ opacity: 0, scale: 0.95 }}
+        initial={{ opacity: 0, scale: 0.96 }}
         animate={{ opacity: 1, scale: 1 }}
-        className="border-2 border-forest/20 bg-forest/5 rounded-2xl p-6 flex items-center gap-4"
+        className="border-2 border-sunlight bg-sunlight/20 rounded-2xl p-6 flex items-center gap-4"
       >
-        <div className="w-12 h-12 rounded-xl bg-forest/10 flex items-center justify-center">
-          <FileText className="w-6 h-6 text-forest" />
+        <div className="w-12 h-12 rounded-xl bg-sunlight flex items-center justify-center">
+          <FileText className="w-6 h-6 text-bark-900" />
         </div>
         <div className="flex-1 min-w-0">
           <p className="text-sm font-medium text-bark-900 truncate">
             {selectedFile.name}
           </p>
-          <p className="text-xs text-bark-700/60 mt-0.5">
+          <p className="text-xs text-bark-700/55 mt-0.5">
             {formatSize(selectedFile.size)}
           </p>
         </div>
@@ -79,7 +79,7 @@ export default function FileUpload({
           onClick={onClear}
           className="w-8 h-8 rounded-full hover:bg-sand-200 flex items-center justify-center transition-colors"
         >
-          <X className="w-4 h-4 text-bark-700/60" />
+          <X className="w-4 h-4 text-bark-700/55" />
         </button>
       </motion.div>
     );
@@ -94,8 +94,8 @@ export default function FileUpload({
       onClick={() => inputRef.current?.click()}
       className={`border-2 border-dashed rounded-2xl p-12 text-center cursor-pointer transition-all ${
         isDragging
-          ? "border-forest bg-forest/5 scale-[1.01]"
-          : "border-sand-300 hover:border-forest/40 hover:bg-sand-50"
+          ? "border-bark-900/40 bg-sunlight/15 scale-[1.01]"
+          : "border-sand-300 hover:border-bark-900/20 hover:bg-sand-50"
       }`}
     >
       <input
@@ -107,14 +107,14 @@ export default function FileUpload({
       />
       <div className="w-14 h-14 rounded-2xl bg-sand-100 flex items-center justify-center mx-auto mb-4">
         <Upload
-          className={`w-6 h-6 ${isDragging ? "text-forest" : "text-bark-700/40"}`}
+          className={`w-6 h-6 ${isDragging ? "text-bark-900" : "text-bark-700/35"}`}
         />
       </div>
       <p className="text-sm font-medium text-bark-900">
         Drop your document here, or{" "}
-        <span className="text-forest">browse</span>
+        <span className="underline underline-offset-2">browse</span>
       </p>
-      <p className="text-xs text-bark-700/50 mt-1.5">
+      <p className="text-xs text-bark-700/45 mt-1.5">
         PDF, DOCX, or TXT up to 10 MB
       </p>
     </div>

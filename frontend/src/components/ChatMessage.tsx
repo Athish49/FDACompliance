@@ -11,14 +11,16 @@ export default function ChatMessage({ message }: { message: ChatMessageType }) {
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: 12 }}
+      initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.3 }}
       className={`flex gap-3 ${isUser ? "flex-row-reverse" : "flex-row"}`}
     >
       <div
         className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${
-          isUser ? "bg-forest/10 text-forest" : "bg-sand-200 text-bark-700"
+          isUser
+            ? "bg-sunlight text-bark-900"
+            : "bg-sand-100 text-bark-700/60"
         }`}
       >
         {isUser ? <User className="w-4 h-4" /> : <Bot className="w-4 h-4" />}
@@ -27,7 +29,7 @@ export default function ChatMessage({ message }: { message: ChatMessageType }) {
       <div
         className={`max-w-[75%] rounded-2xl px-4 py-3 ${
           isUser
-            ? "bg-forest text-white rounded-br-md"
+            ? "bg-bark-900 text-white rounded-br-md"
             : "bg-white border border-sand-200 text-bark-900 rounded-bl-md"
         }`}
       >
@@ -42,7 +44,7 @@ export default function ChatMessage({ message }: { message: ChatMessageType }) {
             ) : (
               <ShieldAlert className="w-3.5 h-3.5 text-amber-500" />
             )}
-            <span className="text-[11px] text-bark-700/50">
+            <span className="text-[11px] text-bark-700/45">
               {message.verification_passed ? "Verified" : "Unverified"}
               {message.confidence_score !== undefined &&
                 ` · ${Math.round(message.confidence_score * 100)}% confidence`}
@@ -51,7 +53,7 @@ export default function ChatMessage({ message }: { message: ChatMessageType }) {
         )}
 
         {!isUser && message.disclaimer && (
-          <p className="mt-2 text-[11px] text-bark-700/40 italic">
+          <p className="mt-2 text-[11px] text-bark-700/35 italic">
             {message.disclaimer}
           </p>
         )}
@@ -60,7 +62,7 @@ export default function ChatMessage({ message }: { message: ChatMessageType }) {
           <div className="mt-3 pt-3 border-t border-sand-200/60">
             <button
               onClick={() => setShowCitations(!showCitations)}
-              className="flex items-center gap-1.5 text-xs font-medium text-forest hover:text-forest-dark transition-colors"
+              className="flex items-center gap-1.5 text-xs font-medium text-bark-700/60 hover:text-bark-900 transition-colors"
             >
               {showCitations ? (
                 <ChevronUp className="w-3.5 h-3.5" />
@@ -81,15 +83,15 @@ export default function ChatMessage({ message }: { message: ChatMessageType }) {
                     key={i}
                     className="text-xs bg-sand-50 border border-sand-200/60 rounded-lg p-2.5"
                   >
-                    <span className="font-medium text-forest">
+                    <span className="font-semibold text-bark-900">
                       {c.section}
                     </span>
                     {c.title && (
-                      <span className="ml-1.5 text-bark-700/50">
+                      <span className="ml-1.5 text-bark-700/45">
                         — {c.title}
                       </span>
                     )}
-                    <p className="mt-1 text-bark-700/80 line-clamp-3">
+                    <p className="mt-1 text-bark-700/75 line-clamp-3">
                       {c.text_snippet}
                     </p>
                   </div>

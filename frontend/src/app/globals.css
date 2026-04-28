@@ -1,31 +1,39 @@
 @import "tailwindcss";
 
 @theme inline {
-  --color-bark-900: #1a0a0a;
-  --color-bark-800: #2a1515;
-  --color-bark-700: #3d1c1c;
-  --color-bark-600: #5a2e2e;
+  /* Bark — primary text & dark CTA */
+  --color-bark-900: #280310;
+  --color-bark-800: #3d0a18;
+  --color-bark-700: #5a1a28;
+  --color-bark-600: #7a2e3e;
 
-  --color-sand-25: #fefcf9;
-  --color-sand-50: #faf6f1;
+  /* Sand — backgrounds */
+  --color-sand-25:  #fefcf9;
+  --color-sand-50:  #faf6f1;
   --color-sand-100: #f3ede4;
   --color-sand-200: #e8dfd3;
   --color-sand-300: #d4c8b8;
   --color-sand-400: #c4b49e;
 
-  --color-forest: #2d5a3d;
-  --color-forest-dark: #1e3f2b;
-  --color-forest-light: #3a7a52;
+  /* Sunlight — primary CTA & highlight cards */
+  --color-sunlight:       #FBF583;
+  --color-sunlight-dark:  #e8e050;
+  --color-sunlight-light: #fdf9b0;
 
-  --color-sunlight: #f5c542;
-  --color-sunlight-light: #fad96a;
+  /* Forest — keep for compliance status indicators only */
+  --color-forest:       #194b22;
+  --color-forest-dark:  #123518;
+  --color-forest-light: #2d6b35;
 
+  /* Semantic */
   --color-background: var(--color-sand-25);
   --color-foreground: var(--color-bark-900);
 
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-  --font-serif: "Georgia", "Times New Roman", serif;
+  /* Fonts */
+  --font-sans:    var(--font-geist-sans);
+  --font-mono:    var(--font-geist-mono);
+  --font-serif:   var(--font-playfair), "Georgia", serif;
+  --font-display: var(--font-playfair), "Georgia", serif;
 }
 
 html {
@@ -38,28 +46,16 @@ body {
   font-family: var(--font-sans), system-ui, sans-serif;
 }
 
-/* Scrollbar styling */
-::-webkit-scrollbar {
-  width: 6px;
-}
+/* Scrollbar */
+::-webkit-scrollbar        { width: 6px; }
+::-webkit-scrollbar-track  { background: transparent; }
+::-webkit-scrollbar-thumb  { background: var(--color-sand-300); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--color-sand-400); }
 
-::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-::-webkit-scrollbar-thumb {
-  background: var(--color-sand-300);
-  border-radius: 3px;
-}
-
-::-webkit-scrollbar-thumb:hover {
-  background: var(--color-sand-400);
-}
-
-/* Skeleton animation */
+/* Skeleton shimmer */
 @keyframes shimmer {
-  0% { background-position: -200% 0; }
-  100% { background-position: 200% 0; }
+  0%   { background-position: -200% 0; }
+  100% { background-position:  200% 0; }
 }
 
 .skeleton-shimmer {
@@ -71,4 +67,27 @@ body {
   );
   background-size: 200% 100%;
   animation: shimmer 1.5s ease-in-out infinite;
+}
+
+/* Breathing animation for decorative hero text */
+@keyframes breathing {
+  0%, 100% { opacity: 0.13; }
+  50%       { opacity: 0.22; }
+}
+
+.breathing { animation: breathing 8s ease-in-out infinite; }
+
+/* Stat ticker marquee */
+@keyframes marquee {
+  0%   { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+
+.marquee-track {
+  animation: marquee 40s linear infinite;
+  will-change: transform;
+}
+
+.marquee-track:hover {
+  animation-play-state: paused;
 }
