@@ -471,8 +471,20 @@ def _chunk_regular_section(
         ]
 
     # ── Step 4: one (or more overflow) chunk per labeled group ───────────
+    # Pre-count how many times each compound label appears so we can append
+    # an occurrence index (-occ2, -occ3, …) when the same label recurs within
+    # a section.  This happens when intermediate numbered items (e.g. (5)(6)(7))
+    # are absent from the <P> stream, leaving the stack's parent label stale and
+    # causing sub-items like (ii) to be assigned the same compound path twice.
+    from collections import Counter
+    label_total_counts: Counter = Counter(compound for compound, _ in groups)
+    label_seen: Counter = Counter()
+
     chunks: list[dict] = []
     for compound_label, texts in groups:
+        label_seen[compound_label] += 1
+        occ = label_seen[compound_label]
+
         para_text = " ".join(texts)
 
         para_hierarchy = {
@@ -483,6 +495,11 @@ def _chunk_regular_section(
 
         # Build an ID-safe suffix from the compound label: (a)(1)(i) → a-1-i
         label_suffix = re.sub(r"\(|\)", lambda m: "" if m.group() == "(" else "-", compound_label).strip("-")
+
+        # Append occurrence index when the same compound label repeats in this
+        # section (occ=1 keeps the existing suffix format for the common case).
+        if label_total_counts[compound_label] > 1:
+            label_suffix = f"{label_suffix}-occ{occ}"
 
         overflow_parts = _split_overflow(para_text)
         total = len(overflow_parts)

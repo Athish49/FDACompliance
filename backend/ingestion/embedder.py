@@ -168,9 +168,20 @@ def _load_bgem3_model(config: EmbedderConfig):
             "FlagEmbedding is required. Install with: pip install FlagEmbedding"
         ) from exc
 
-    logger.info("Loading BGE-M3 model: %s (fp16=%s)", config.model_name, config.use_fp16)
     import torch
-    device = "mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu")
+
+    if torch.backends.mps.is_available():
+        device = "mps"
+        device_label = "Apple GPU (MPS)"
+    elif torch.cuda.is_available():
+        device = "cuda"
+        device_label = f"CUDA GPU ({torch.cuda.get_device_name(0)})"
+    else:
+        device = "cpu"
+        device_label = "CPU"
+
+    print(f"\n[EMBED] *** Inference device: {device_label} ***\n", flush=True)
+    logger.info("Loading BGE-M3 model: %s  device=%s  fp16=%s", config.model_name, device, config.use_fp16)
     _bgem3_model = BGEM3FlagModel(config.model_name, use_fp16=config.use_fp16, device=device)
     return _bgem3_model
 
@@ -491,20 +502,35 @@ def embed_and_store(
 
     # Pre-compute embed text and content hash for every chunk
     embed_texts = [_build_embed_text(c, config) for c in chunks]
-    new_hashes = {
-        _chunk_id_to_uuid(c["chunk_id"]): _content_hash(t)
-        for c, t in zip(chunks, embed_texts)
-    }
+
+    # Build per-chunk UUID list (one entry per chunk, preserving order)
+    chunk_uuids = [_chunk_id_to_uuid(c["chunk_id"]) for c in chunks]
+
+    # Warn loudly if any chunk_ids are duplicated — this means the extractor
+    # produced colliding IDs and those chunks will overwrite each other in Qdrant.
+    from collections import Counter
+    uuid_counts = Counter(chunk_uuids)
+    dup_count = sum(v - 1 for v in uuid_counts.values() if v > 1)
+    if dup_count:
+        logger.warning(
+            "[EMBED] WARNING: %d duplicate chunk_id(s) detected in source data — "
+            "re-run extraction to fix before embedding. Duplicate points will overwrite each other.",
+            dup_count,
+        )
+
+    new_hashes = {uid: _content_hash(t) for uid, t in zip(chunk_uuids, embed_texts)}
     current_ids: set[str] = set(new_hashes.keys())
 
     # Fetch existing state to enable skip-if-unchanged
     existing_hashes = _fetch_existing_hashes(client, config.collection_name)
 
-    # Partition chunks: skip (hash matches) vs embed (new or changed)
+    # Partition chunks: skip (hash matches) vs embed (new or changed).
+    # Iterate over chunk_uuids (same length as chunks) instead of new_hashes
+    # (a dict that deduplicates keys) so no chunks are silently dropped.
     to_embed_indices: list[int] = []
     skipped = 0
-    for i, (chunk, point_id) in enumerate(zip(chunks, new_hashes)):
-        if existing_hashes.get(point_id) == new_hashes[point_id]:
+    for i, (point_id, t) in enumerate(zip(chunk_uuids, embed_texts)):
+        if existing_hashes.get(point_id) == _content_hash(t):
             skipped += 1
         else:
             to_embed_indices.append(i)

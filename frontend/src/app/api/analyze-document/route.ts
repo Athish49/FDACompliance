@@ -33,8 +33,12 @@ function previewResponse(): AnalysisResponse {
 
 /**
  * Map a backend severity string to the frontend severity enum.
- * Backend: "critical" | "high" | "medium" | "low"
- * Frontend: "critical" | "warning" | "info" | "pass"
+ *
+ * Backend values (from document_analysis/graph.py):  "critical" | "high" | "medium" | "low"
+ * Frontend values (see types/index.ts AnalysisFinding): "critical" | "warning" | "info" | "pass"
+ *
+ * If the backend adds a new severity value, a warning is logged server-side
+ * and the value falls through to "info" so the UI doesn't break silently.
  */
 function mapSeverity(
   sev: string
@@ -49,6 +53,10 @@ function mapSeverity(
     case "low":
       return "pass";
     default:
+      console.warn(
+        `[analyze-document] Unknown backend severity value "${sev}" — defaulting to "info". ` +
+        `Update mapSeverity() in route.ts if the backend severity enum has changed.`
+      );
       return "info";
   }
 }
@@ -148,75 +156,128 @@ function transformReport(report: Record<string, unknown>): AnalysisResponse {
   };
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Poll result — discriminated union so the POST handler can respond precisely
+// ─────────────────────────────────────────────────────────────────────────────
+
+type PollResult =
+  | { ok: true; report: Record<string, unknown> }
+  | { ok: false; reason: "timeout" | "job_failed" | "network_error"; detail?: string };
+
 /**
  * Poll the backend job status until completed or failed (max 120s, 2s intervals).
+ * Returns a discriminated PollResult instead of null so the caller can give
+ * the user a precise error message rather than silently falling back to preview data.
  */
-async function pollJob(
-  base: string,
-  jobId: string
-): Promise<Record<string, unknown> | null> {
+async function pollJob(base: string, jobId: string): Promise<PollResult> {
   const maxAttempts = 60; // 60 × 2s = 120s
   for (let i = 0; i < maxAttempts; i++) {
     await new Promise((r) => setTimeout(r, 2000));
-    const res = await fetch(`${base}/api/jobs/${jobId}`);
-    if (!res.ok) return null;
+    let res: Response;
+    try {
+      res = await fetch(`${base}/api/jobs/${jobId}`);
+    } catch (err) {
+      return {
+        ok: false,
+        reason: "network_error",
+        detail: err instanceof Error ? err.message : String(err),
+      };
+    }
+    if (!res.ok) {
+      return { ok: false, reason: "network_error", detail: `HTTP ${res.status}` };
+    }
     const body = (await res.json()) as {
       status: string;
       result?: Record<string, unknown>;
       error?: string;
     };
     if (body.status === "completed" && body.result) {
-      return body.result;
+      return { ok: true, report: body.result };
     }
     if (body.status === "failed") {
-      return null;
+      return { ok: false, reason: "job_failed", detail: body.error };
     }
     // "queued" or "running" → keep polling
   }
-  return null; // timeout
+  return { ok: false, reason: "timeout" };
 }
 
 export async function POST(req: NextRequest) {
   const base = backendBase();
   const form = await req.formData();
 
+  // Backend not configured — show preview so the UI isn't broken in local dev
   if (!base) {
     return NextResponse.json(previewResponse());
   }
 
+  let submitRes: Response;
   try {
-    // Step 1: Submit document → get job_id
-    const submitRes = await fetch(`${base}/api/analyze-document`, {
+    submitRes = await fetch(`${base}/api/analyze-document`, {
       method: "POST",
       body: form,
     });
-
-    if (!submitRes.ok) {
-      return NextResponse.json(previewResponse());
-    }
-
-    const submitBody = (await submitRes.json()) as {
-      job_id?: string;
-      // legacy: backend might return AnalysisResponse directly
-      findings?: unknown;
-    };
-
-    // Step 2: If backend returned a job_id, poll for completion
-    if (submitBody.job_id) {
-      const report = await pollJob(base, submitBody.job_id);
-      if (!report) {
-        return NextResponse.json(previewResponse());
-      }
-      return NextResponse.json(transformReport(report));
-    }
-
-    // Fallback: backend returned a complete response (legacy or direct mode)
-    if (submitBody.findings) {
-      return NextResponse.json(submitBody);
-    }
-
-    return NextResponse.json(previewResponse());
   } catch {
+    // Backend unreachable — show preview
     return NextResponse.json(previewResponse());
   }
+
+  if (!submitRes.ok) {
+    // Backend running but returned an error — show preview
+    return NextResponse.json(previewResponse());
+  }
+
+  const submitBody = (await submitRes.json()) as {
+    job_id?: string;
+    findings?: unknown; // legacy: backend might return AnalysisResponse directly
+  };
+
+  // Async job path: poll until done
+  if (submitBody.job_id) {
+    const poll = await pollJob(base, submitBody.job_id);
+
+    if (!poll.ok) {
+      if (poll.reason === "timeout") {
+        return NextResponse.json(
+          {
+            error: "timeout",
+            message:
+              "Analysis took over 2 minutes. The document may be too large — try a smaller file or a plain-text extract.",
+          },
+          { status: 504 }
+        );
+      }
+      if (poll.reason === "job_failed") {
+        return NextResponse.json(
+          {
+            error: "job_failed",
+            message: poll.detail
+              ? `Analysis failed: ${poll.detail}`
+              : "Analysis failed on the server. Check the document format and try again.",
+          },
+          { status: 502 }
+        );
+      }
+      // network_error
+      return NextResponse.json(
+        {
+          error: "network_error",
+          message:
+            poll.detail
+              ? `Lost connection to the analysis service: ${poll.detail}`
+              : "Lost connection to the analysis service. Check the backend is running and try again.",
+        },
+        { status: 502 }
+      );
+    }
+
+    return NextResponse.json(transformReport(poll.report));
+  }
+
+  // Legacy / direct-response path
+  if (submitBody.findings) {
+    return NextResponse.json(submitBody);
+  }
+
+  return NextResponse.json(previewResponse());
 }

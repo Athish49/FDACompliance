@@ -3,10 +3,28 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { motion } from "framer-motion";
+import { useEffect, useState } from "react";
+import { getIngestStatus, type IndexStatus } from "@/lib/api";
+
+const statusDot: Record<IndexStatus, { color: string; pulse: boolean; label: string }> = {
+  ready:   { color: "bg-emerald-500", pulse: false, label: "Data ready"    },
+  running: { color: "bg-amber-400",   pulse: true,  label: "Indexing…"     },
+  error:   { color: "bg-red-500",     pulse: false, label: "Index error"   },
+  no_run:  { color: "bg-sand-400",    pulse: false, label: "Not indexed"   },
+  unknown: { color: "bg-sand-300",    pulse: false, label: ""              },
+};
 
 export default function Navbar() {
   const pathname = usePathname();
   const isLanding = pathname === "/";
+
+  const [indexStatus, setIndexStatus] = useState<IndexStatus>("unknown");
+
+  useEffect(() => {
+    getIngestStatus().then(setIndexStatus).catch(() => {});
+  }, []);
+
+  const dot = statusDot[indexStatus];
 
   return (
     <div className="fixed top-0 left-0 right-0 z-50">
@@ -57,8 +75,23 @@ export default function Navbar() {
             </Link>
           </div>
 
-          {/* CTAs */}
-          <div className="flex items-center gap-2 shrink-0">
+          {/* CTAs + index status */}
+          <div className="flex items-center gap-3 shrink-0">
+            {/* Index status indicator — hidden when status is unknown */}
+            {indexStatus !== "unknown" && (
+              <div className="hidden sm:flex items-center gap-1.5">
+                <span className="relative flex h-2 w-2">
+                  {dot.pulse && (
+                    <span className={`animate-ping absolute inline-flex h-full w-full rounded-full ${dot.color} opacity-60`} />
+                  )}
+                  <span className={`relative inline-flex rounded-full h-2 w-2 ${dot.color}`} />
+                </span>
+                {dot.label && (
+                  <span className="text-xs text-bark-700/50">{dot.label}</span>
+                )}
+              </div>
+            )}
+
             {!isLanding && (
               <Link
                 href="/"

@@ -54,6 +54,14 @@ export interface SearchResponse {
 export interface AnalysisFinding {
   id: string;
   category: string;
+  /**
+   * Mapped from backend severity (see api/analyze-document/route.ts → mapSeverity):
+   *   backend "critical" → "critical"
+   *   backend "high"     → "warning"
+   *   backend "medium"   → "info"
+   *   backend "low"      → "pass"
+   * If the backend severity enum changes, update mapSeverity() in the route handler.
+   */
   severity: "critical" | "warning" | "info" | "pass";
   title: string;
   description: string;

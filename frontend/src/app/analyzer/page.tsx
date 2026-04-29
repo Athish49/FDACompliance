@@ -98,6 +98,7 @@ export default function AnalyzerPage() {
   const [file, setFile] = useState<File | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysis, setAnalysis] = useState<AnalysisResponse | null>(null);
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [followUps, setFollowUps] = useState<FollowUpMessage[]>([]);
   const [followUpInput, setFollowUpInput] = useState("");
   const [isFollowUpLoading, setIsFollowUpLoading] = useState(false);
@@ -105,11 +106,14 @@ export default function AnalyzerPage() {
   const handleAnalyze = useCallback(async () => {
     if (!file) return;
     setIsAnalyzing(true);
+    setAnalysisError(null);
     try {
       const result = await analyzeDocument(file);
       setAnalysis(result);
-    } catch {
-      // keep upload state
+    } catch (err) {
+      setAnalysisError(
+        err instanceof Error ? err.message : "Analysis failed. Please try again."
+      );
     } finally {
       setIsAnalyzing(false);
     }
@@ -118,6 +122,7 @@ export default function AnalyzerPage() {
   const handleReset = () => {
     setFile(null);
     setAnalysis(null);
+    setAnalysisError(null);
     setFollowUps([]);
     setFollowUpInput("");
   };
@@ -266,6 +271,26 @@ export default function AnalyzerPage() {
 
                     {isAnalyzing ? (
                       <SkeletonDocument />
+                    ) : analysisError ? (
+                      <motion.div
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        className="bg-red-50 border border-red-200 rounded-2xl p-6"
+                      >
+                        <div className="flex items-start gap-3">
+                          <AlertCircle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
+                          <div>
+                            <h4 className="font-semibold text-red-900">Analysis failed</h4>
+                            <p className="text-sm text-red-700/80 mt-1 leading-relaxed">{analysisError}</p>
+                            <button
+                              onClick={handleAnalyze}
+                              className="mt-4 text-xs font-medium text-red-700 underline underline-offset-2 hover:text-red-900 transition-colors"
+                            >
+                              Try again
+                            </button>
+                          </div>
+                        </div>
+                      </motion.div>
                     ) : analysis ? (
                       <motion.div
                         initial={{ opacity: 0, y: 10 }}
