@@ -19,6 +19,8 @@ Run with:
 
 from __future__ import annotations
 
+import asyncio
+import json as _json
 import logging
 import threading
 import uuid
@@ -27,6 +29,7 @@ from typing import Optional
 
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from config import get_settings
@@ -159,6 +162,15 @@ class SearchResultItem(BaseModel):
     defines: Optional[str] = None
     overflow_chunks: list[dict] = []
     metadata: dict = {}
+    # Enrichment fields
+    ecfr_url: Optional[str] = None
+    relevance_tier: str = "low"
+    display_hint: str = "plain_text"
+    has_metrics: bool = False
+    cross_reference_count: int = 0
+    subpart_name: Optional[str] = None
+    full_breadcrumb: str = ""
+    is_overflow_chunk: bool = False
 
 
 class SearchResponse(BaseModel):
@@ -309,6 +321,14 @@ def search(request: SearchRequest):
                 defines=r.defines,
                 overflow_chunks=r.overflow_chunks,
                 metadata=r.metadata,
+                ecfr_url=r.ecfr_url,
+                relevance_tier=r.relevance_tier,
+                display_hint=r.display_hint,
+                has_metrics=r.has_metrics,
+                cross_reference_count=r.cross_reference_count,
+                subpart_name=r.subpart_name,
+                full_breadcrumb=r.full_breadcrumb,
+                is_overflow_chunk=r.is_overflow_chunk,
             )
             for r in results
         ],
@@ -341,16 +361,16 @@ class QueryResponse(BaseModel):
 @app.post("/api/query", response_model=QueryResponse, tags=["query"])
 def query_compliance(request: QueryRequest):
     """
-    Multi-agent compliance reasoning pipeline.
+    Multi-agent compliance reasoning pipeline (v2).
 
-    Takes a natural language question, retrieves relevant CFR sections,
-    resolves definitions, synthesizes a grounded answer with citations,
-    verifies claims, and detects cross-section conflicts.
+    Stages: query analysis → sub-question decomposition (with HyDE + stepback variants)
+    → parallel per-sub-question retrieval (Flow A + B, CRAG, cross-ref, claim verification)
+    → consistency detection → final synthesis.
     """
     from agents.graph import query_graph
 
     try:
-        result = query_graph.invoke({"query": request.question, "retry_count": 0})
+        result = query_graph.invoke({"query": request.question, "sub_answers": []})
     except Exception as exc:
         logger.exception("Query pipeline failed: %s", exc)
         raise HTTPException(status_code=500, detail=f"Query pipeline error: {exc}")
@@ -361,6 +381,107 @@ def query_compliance(request: QueryRequest):
         raise HTTPException(status_code=500, detail=error)
 
     return QueryResponse(**final)
+
+
+@app.post("/api/query/stream", tags=["query"])
+async def query_compliance_stream(request: QueryRequest):
+    """
+    SSE streaming version of /api/query.
+
+    Emits one JSON event per completed agent node so the frontend can show
+    live progress while the multi-agent pipeline runs. Each event has the form:
+
+        data: {"event": "<node_name>", ...node-specific fields...}
+
+    Terminal event: ``data: [DONE]``
+
+    Node events:
+      planner        → intent, sub_questions
+      retriever      → chunk_count, xref_count, has_sufficient_coverage
+      definition_resolver → definitions_found
+      synthesizer    → confidence_score, citation_count
+      verifier       → verification_passed, issues_count
+      conflict_detector → conflicts_detected, answer (full QueryResponse payload)
+      insufficient_coverage → answer
+    """
+    from agents.graph import query_graph
+
+    async def generate():
+        loop = asyncio.get_event_loop()
+        queue: asyncio.Queue = asyncio.Queue()
+
+        def _run():
+            try:
+                for chunk in query_graph.stream(
+                    {"query": request.question, "sub_answers": []},
+                    stream_mode="updates",
+                ):
+                    loop.call_soon_threadsafe(queue.put_nowait, chunk)
+            except Exception as exc:
+                loop.call_soon_threadsafe(queue.put_nowait, {"__error__": str(exc)})
+            finally:
+                loop.call_soon_threadsafe(queue.put_nowait, None)
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+
+        while True:
+            event = await queue.get()
+            if event is None:
+                yield "data: [DONE]\n\n"
+                break
+
+            if "__error__" in event:
+                yield f"data: {_json.dumps({'event': 'error', 'detail': event['__error__']})}\n\n"
+                yield "data: [DONE]\n\n"
+                break
+
+            node_name = next(iter(event))
+            state_up = event[node_name]
+            payload: dict = {"event": node_name}
+
+            # ── v2 node events ─────────────────────────────────────────────
+            if node_name == "query_analyzer":
+                analyzed = state_up.get("analyzed_query", {})
+                payload["intent_type"] = analyzed.get("intent_type")
+                payload["needs_clarification"] = state_up.get("needs_clarification", False)
+                payload["entities"] = analyzed.get("entities", {})
+            elif node_name == "clarification_response":
+                final = state_up.get("final_response")
+                if final:
+                    payload["answer"] = final
+            elif node_name == "decomposer":
+                sub_qs = state_up.get("sub_questions", [])
+                payload["sub_question_count"] = len(sub_qs)
+                payload["sub_questions"] = [sq.get("text") for sq in sub_qs]
+            elif node_name == "process_sub_question":
+                new_answers = state_up.get("sub_answers", [])
+                if new_answers:
+                    sa = new_answers[-1]
+                    payload["sub_question_text"] = sa.get("sub_question_text", "")
+                    payload["crag_verdict"] = sa.get("crag_verdict", "")
+                    payload["confidence"] = sa.get("confidence", 0.0)
+                    payload["citation_count"] = len(sa.get("citations", []))
+            elif node_name == "consistency_detector":
+                payload["conflict_count"] = len(state_up.get("unresolved_conflicts", []))
+            elif node_name == "final_synthesizer":
+                final = state_up.get("final_response")
+                fa = state_up.get("final_answer", {})
+                if final:
+                    payload["answer"] = final
+                payload["ruling"] = fa.get("ruling")
+                payload["confidence_level"] = fa.get("confidence_level")
+                payload["conflicts_detected"] = bool(state_up.get("unresolved_conflicts"))
+
+            yield f"data: {_json.dumps(payload)}\n\n"
+
+        t.join(timeout=5)
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.get("/api/chunks/{chunk_id}", tags=["search"])

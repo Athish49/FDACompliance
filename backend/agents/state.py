@@ -1,41 +1,36 @@
-"""ComplianceState — shared state for the LangGraph multi-agent pipeline."""
-
+"""ComplianceState — shared state for the v2 LangGraph multi-agent pipeline."""
 from __future__ import annotations
 
-from typing import TypedDict
+import operator
+from typing import Annotated, TypedDict
 
 
 class ComplianceState(TypedDict, total=False):
-    # ── Input ─────────────────────────────────────────────────────────────
+    # ── Input ──────────────────────────────────────────────────────────────────
     query: str
-    intent: str  # compliance_question | definition_lookup | comparison | general
 
-    # ── Planner ───────────────────────────────────────────────────────────
-    sub_questions: list[str]
-    search_filters: dict  # {part_number, section_number, chapter_number} or {}
+    # ── Stage 1: Query Analysis ────────────────────────────────────────────────
+    analyzed_query: dict       # intent_type, entities, is_multi_part, explicit_refs
+    needs_clarification: bool
+    clarification_question: str | None
 
-    # ── Retrieval ─────────────────────────────────────────────────────────
-    retrieved_chunks: list[dict]
-    cross_ref_chunks: list[dict]
+    # ── Stage 2: Sub-Question Decomposition ───────────────────────────────────
+    sub_questions: list[dict]  # [{id, text, variants:{primary,hyde_passage,stepback}, source_query}]
 
-    # ── Definition resolver ───────────────────────────────────────────────
-    definitions_resolved: dict[str, str]  # term → definition text
-    definition_chunks: list[dict]
+    # ── Fan-out: per-sub-question Send payload ────────────────────────────────
+    # Populated only in the Send branch — not in top-level state.
+    sub_question: dict
 
-    # ── Synthesizer ───────────────────────────────────────────────────────
-    draft_answer: str
-    citations: list[dict]  # [{section, title, text_snippet}]
-    confidence_score: float
+    # ── Fan-in: operator.add reducer collects results from parallel branches ──
+    sub_answers: Annotated[list[dict], operator.add]  # list[SubAnswer]
 
-    # ── Verifier ──────────────────────────────────────────────────────────
-    verification_passed: bool
-    verification_issues: list[dict]  # [{claim, issue, detail}]
-    retry_count: int
+    # ── Stage 6: Consistency & Conflict Detection ─────────────────────────────
+    resolved_answers: list[dict]
+    unresolved_conflicts: list[dict]   # list[ConflictReport]
 
-    # ── Conflict detector ─────────────────────────────────────────────────
-    conflicts_detected: bool
-    conflict_flags: list[dict]  # [{sections, description}]
+    # ── Stage 7: Final Synthesis ──────────────────────────────────────────────
+    final_answer: dict      # v2 FinalAnswer schema
+    final_response: dict    # API-compatible QueryResponse shape
 
-    # ── Final ─────────────────────────────────────────────────────────────
-    final_response: dict
+    # ── Error ─────────────────────────────────────────────────────────────────
     error: str | None

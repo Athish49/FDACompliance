@@ -1,4 +1,4 @@
-import type { AnalysisResponse, QueryResponse } from "@/types";
+import type { AnalysisResponse, QueryResponse, SSEEvent } from "@/types";
 
 async function parseJson<T>(res: Response): Promise<T> {
   const text = await res.text();
@@ -9,15 +9,73 @@ async function parseJson<T>(res: Response): Promise<T> {
 }
 
 /**
- * Compliance Q&A — proxied to the FastAPI backend via `POST /api/query` (see route handler).
+ * Compliance Q&A — SSE streaming version.
+ *
+ * Calls the backend pipeline and fires `onEvent` as each agent node completes,
+ * enabling live progress feedback. Resolves with the final QueryResponse when
+ * the stream ends, or rejects on network/backend error.
  */
-export async function queryCompliance(question: string): Promise<QueryResponse> {
-  const res = await fetch("/api/query", {
+export async function queryComplianceStream(
+  question: string,
+  onEvent: (event: SSEEvent) => void,
+): Promise<QueryResponse> {
+  const res = await fetch("/api/query/stream", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ question }),
   });
-  return parseJson<QueryResponse>(res);
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Stream request failed (${res.status})`);
+  }
+  if (!res.body) {
+    throw new Error("Response has no body — streaming not supported in this environment.");
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let finalResponse: QueryResponse | null = null;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+
+    // Split on newlines; keep any incomplete trailing line in the buffer.
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+
+    for (const line of lines) {
+      if (!line.startsWith("data: ")) continue;
+      const data = line.slice(6).trim();
+      if (data === "[DONE]") break;
+
+      let event: SSEEvent;
+      try {
+        event = JSON.parse(data) as SSEEvent;
+      } catch {
+        continue;
+      }
+
+      onEvent(event);
+
+      // The conflict_detector and insufficient_coverage nodes carry the full answer.
+      if (
+        (event.event === "conflict_detector" || event.event === "insufficient_coverage") &&
+        event.answer
+      ) {
+        finalResponse = event.answer;
+      }
+    }
+  }
+
+  if (!finalResponse) {
+    throw new Error("Stream ended without a final answer from the pipeline.");
+  }
+  return finalResponse;
 }
 
 /**
@@ -38,7 +96,6 @@ export async function analyzeDocument(file: File): Promise<AnalysisResponse> {
       const body = JSON.parse(text) as { message?: string };
       if (body.message) message = body.message;
     } catch {
-      // raw text is the message
       if (text) message = text;
     }
     throw new Error(message);
@@ -61,7 +118,6 @@ export async function getIngestStatus(): Promise<IndexStatus> {
     if (body.status === "running") return "running";
     if (body.status === "no_run") return "no_run";
     if (body.status === "unknown") return "unknown";
-    // Full PipelineResult — check success flag
     if (typeof body.success === "boolean") return body.success ? "ready" : "error";
     return "unknown";
   } catch {

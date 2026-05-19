@@ -9,8 +9,8 @@ import Navbar from "@/components/Navbar";
 import ChatMessage from "@/components/ChatMessage";
 import ChatInput from "@/components/ChatInput";
 import SkeletonMessage from "@/components/SkeletonMessage";
-import { queryCompliance } from "@/lib/api";
-import type { ChatMessage as ChatMessageType } from "@/types";
+import { queryComplianceStream } from "@/lib/api";
+import type { ChatMessage as ChatMessageType, SSEEvent } from "@/types";
 
 const SUGGESTIONS = [
   "What are the labeling requirements for allergen declarations?",
@@ -18,10 +18,42 @@ const SUGGESTIONS = [
   "When can a product use the term 'healthy' on its label?",
 ];
 
+// Maps each SSE agent event to a human-readable progress label.
+function stageLabelFor(event: SSEEvent): string {
+  switch (event.event) {
+    case "planner":
+      return "Planning query…";
+    case "retriever":
+      if (event.has_sufficient_coverage === false) return "Searching CFR database (low coverage)…";
+      return event.chunk_count !== undefined
+        ? `Found ${event.chunk_count} relevant section${event.chunk_count !== 1 ? "s" : ""}…`
+        : "Searching CFR database…";
+    case "definition_resolver":
+      return event.definitions_found
+        ? `Resolved ${event.definitions_found} definition${event.definitions_found !== 1 ? "s" : ""}…`
+        : "Resolving definitions…";
+    case "synthesizer":
+      return "Generating answer…";
+    case "verifier":
+      return event.verification_passed === false
+        ? "Verification failed — retrying…"
+        : "Verifying claims…";
+    case "conflict_detector":
+      return "Finalizing…";
+    case "insufficient_coverage":
+      return "Insufficient coverage found…";
+    case "error":
+      return "Error in pipeline…";
+    default:
+      return "Thinking…";
+  }
+}
+
 function ChatPageInner() {
   const searchParams = useSearchParams();
   const [messages, setMessages] = useState<ChatMessageType[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [loadingStage, setLoadingStage] = useState<string>("");
   const scrollRef = useRef<HTMLDivElement>(null);
   const autoSentRef = useRef(false);
 
@@ -33,7 +65,7 @@ function ChatPageInner() {
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages, isLoading, scrollToBottom]);
+  }, [messages, isLoading, loadingStage, scrollToBottom]);
 
   // Auto-send query param from landing page search
   useEffect(() => {
@@ -54,9 +86,13 @@ function ChatPageInner() {
     };
     setMessages((prev) => [...prev, userMsg]);
     setIsLoading(true);
+    setLoadingStage("Planning query…");
 
     try {
-      const response = await queryCompliance(text);
+      const response = await queryComplianceStream(text, (event: SSEEvent) => {
+        setLoadingStage(stageLabelFor(event));
+      });
+
       const assistantMsg: ChatMessageType = {
         id: (Date.now() + 1).toString(),
         role: "assistant",
@@ -65,6 +101,7 @@ function ChatPageInner() {
         disclaimer: response.disclaimer,
         confidence_score: response.confidence_score,
         verification_passed: response.verification_passed,
+        conflicts_detected: response.conflicts_detected,
         timestamp: new Date(),
       };
       setMessages((prev) => [...prev, assistantMsg]);
@@ -72,16 +109,21 @@ function ChatPageInner() {
       const errorMsg: ChatMessageType = {
         id: (Date.now() + 1).toString(),
         role: "assistant",
-        content: "I'm sorry, I couldn't process your question right now. Please ensure the backend server is running and try again.",
+        content:
+          "I'm sorry, I couldn't process your question right now. Please ensure the backend server is running and try again.",
         timestamp: new Date(),
       };
       setMessages((prev) => [...prev, errorMsg]);
     } finally {
       setIsLoading(false);
+      setLoadingStage("");
     }
   };
 
-  const handleClear = () => { setMessages([]); autoSentRef.current = false; };
+  const handleClear = () => {
+    setMessages([]);
+    autoSentRef.current = false;
+  };
   const hasMessages = messages.length > 0;
 
   return (
@@ -155,7 +197,7 @@ function ChatPageInner() {
                   {messages.map((msg) => (
                     <ChatMessage key={msg.id} message={msg} />
                   ))}
-                  {isLoading && <SkeletonMessage />}
+                  {isLoading && <SkeletonMessage stage={loadingStage} />}
                 </motion.div>
               )}
             </AnimatePresence>

@@ -1,53 +1,114 @@
-"""LangGraph StateGraph — wires the 6 agent nodes into a compiled graph."""
+"""LangGraph StateGraph — v2 multi-agent compliance reasoning pipeline.
 
+Flow:
+  query_analyzer ──→ [clarification?] ──→ decomposer ──→ [fan-out per sub-question]
+        │                                                          │ (parallel)
+  clarification_response → END                         process_sub_question × N
+                                                                   │ (fan-in via operator.add)
+                                                         consistency_detector
+                                                                   │
+                                                          final_synthesizer → END
+"""
 from __future__ import annotations
 
 import logging
 
+from langgraph.constants import Send
 from langgraph.graph import END, StateGraph
 
-from agents.conflict_detector import conflict_detector_node
-from agents.definition_resolver import definition_resolver_node
-from agents.planner import planner_node
-from agents.retriever_node import retriever_node
+from agents.consistency import consistency_detector_node
+from agents.decomposer import decomposer_node
+from agents.final_synthesizer import DISCLAIMER, final_synthesizer_node
+from agents.query_analyzer import query_analyzer_node
+from agents.retrieval_pipeline import process_sub_question_node
 from agents.state import ComplianceState
-from agents.synthesizer import synthesizer_node
-from agents.verifier import verifier_node
 
 logger = logging.getLogger(__name__)
 
-MAX_RETRIES = 2
+
+# ── Clarification short-circuit node ─────────────────────────────────────────
+
+def clarification_response_node(state: ComplianceState) -> dict:
+    """Return a structured clarification request without further LLM calls."""
+    clarification_q = state.get("clarification_question") or (
+        "Could you please provide more details about your question? "
+        "Specifically: what product type, what type of label claim, "
+        "and which FDA regulatory area (food, drug, device, cosmetic) are you asking about?"
+    )
+    final_response = {
+        "answer": clarification_q,
+        "citations": [],
+        "confidence_score": 0.0,
+        "conflicts_detected": False,
+        "conflict_details": [],
+        "disclaimer": DISCLAIMER,
+        "retrieved_sections": [],
+        "verification_passed": False,
+    }
+    return {
+        "final_answer": {"ruling": "CONDITIONAL", "ruling_summary": clarification_q},
+        "final_response": final_response,
+    }
 
 
-def should_retry(state: ComplianceState) -> str:
-    """Conditional edge: retry via planner or proceed to conflict detector."""
-    if not state.get("verification_passed", True) and state.get("retry_count", 0) < MAX_RETRIES:
-        logger.info("Verifier triggered retry (%d/%d)", state["retry_count"], MAX_RETRIES)
-        return "planner"
-    return "conflict_detector"
+# ── Conditional edge functions ────────────────────────────────────────────────
+
+def check_clarification(state: ComplianceState) -> str:
+    """Route to clarification response or decomposer."""
+    if state.get("needs_clarification"):
+        logger.info("Query requires clarification — short-circuiting")
+        return "clarification_response"
+    return "decomposer"
 
 
-# ── Build graph ───────────────────────────────────────────────────────────
+def dispatch_sub_questions(state: ComplianceState) -> list:
+    """Fan-out: create one Send per sub-question for parallel processing."""
+    sub_questions = state.get("sub_questions", [])
+    if not sub_questions:
+        logger.warning("No sub-questions generated — sending original query as single sub-question")
+        sub_questions = [{
+            "id": "fallback",
+            "text": state.get("query", ""),
+            "variants": {
+                "primary": state.get("query", ""),
+                "hyde_passage": state.get("query", ""),
+                "stepback": state.get("query", ""),
+            },
+            "source_query": state.get("query", ""),
+        }]
+    return [
+        Send("process_sub_question", {
+            "query": state["query"],
+            "analyzed_query": state.get("analyzed_query", {}),
+            "sub_question": sq,
+        })
+        for sq in sub_questions
+    ]
+
+
+# ── Build graph ───────────────────────────────────────────────────────────────
 
 graph = StateGraph(ComplianceState)
 
-graph.add_node("planner", planner_node)
-graph.add_node("retriever", retriever_node)
-graph.add_node("definition_resolver", definition_resolver_node)
-graph.add_node("synthesizer", synthesizer_node)
-graph.add_node("verifier", verifier_node)
-graph.add_node("conflict_detector", conflict_detector_node)
+graph.add_node("query_analyzer", query_analyzer_node)
+graph.add_node("clarification_response", clarification_response_node)
+graph.add_node("decomposer", decomposer_node)
+graph.add_node("process_sub_question", process_sub_question_node)
+graph.add_node("consistency_detector", consistency_detector_node)
+graph.add_node("final_synthesizer", final_synthesizer_node)
 
-graph.set_entry_point("planner")
-graph.add_edge("planner", "retriever")
-graph.add_edge("retriever", "definition_resolver")
-graph.add_edge("definition_resolver", "synthesizer")
-graph.add_edge("synthesizer", "verifier")
+graph.set_entry_point("query_analyzer")
 
-graph.add_conditional_edges("verifier", should_retry, {
-    "planner": "planner",
-    "conflict_detector": "conflict_detector",
+graph.add_conditional_edges("query_analyzer", check_clarification, {
+    "clarification_response": "clarification_response",
+    "decomposer": "decomposer",
 })
-graph.add_edge("conflict_detector", END)
+graph.add_edge("clarification_response", END)
+
+graph.add_conditional_edges("decomposer", dispatch_sub_questions)
+graph.add_edge("process_sub_question", "consistency_detector")
+
+graph.add_edge("consistency_detector", "final_synthesizer")
+graph.add_edge("final_synthesizer", END)
 
 query_graph = graph.compile()

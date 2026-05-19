@@ -255,6 +255,7 @@ def _ensure_collection(client, config: EmbedderConfig) -> None:
         "chunk_id": PayloadSchemaType.KEYWORD,
         "part_number": PayloadSchemaType.KEYWORD,
         "chapter_number": PayloadSchemaType.KEYWORD,
+        "subpart_letter": PayloadSchemaType.KEYWORD,
         "chunk_type": PayloadSchemaType.KEYWORD,
         "cfr_citation": PayloadSchemaType.TEXT,
         "section_number": PayloadSchemaType.KEYWORD,

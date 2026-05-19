@@ -1,4 +1,4 @@
-"""LiteLLM wrapper using ``config`` — model chain is local (Ollama) or cloud (Groq → Gemini)."""
+"""LiteLLM wrapper using ``config`` — model chain is local (Ollama) or cloud (Groq → Gemini → NVIDIA)."""
 
 from __future__ import annotations
 
@@ -15,9 +15,14 @@ logger = logging.getLogger(__name__)
 litellm.suppress_debug_info = True
 
 
+_NVIDIA_API_BASE = "https://integrate.api.nvidia.com/v1"
+
+
 def _api_base_for_model(model: str, ollama_base: Optional[str]) -> Optional[str]:
     if model.startswith("ollama"):
         return ollama_base or get_settings().ollama_base_url
+    if model.startswith("nvidia_nim"):
+        return _NVIDIA_API_BASE
     return None
 
 
@@ -76,6 +81,55 @@ def llm_completion_json(
             last_error = exc
 
     raise RuntimeError(f"All LLM models failed (JSON mode). Last error: {last_error}")
+
+
+def llm_with_tools(
+    messages: list[dict],
+    tools: list[dict],
+    max_tokens: int = 1024,
+    temperature: float = 0.1,
+) -> tuple[str, list[dict]]:
+    """
+    Call LLM with tool definitions and return (text_content, tool_calls).
+
+    tool_calls is a list of {"id": str, "name": str, "arguments": dict}.
+    Falls back to (empty_string, []) if no model in the chain supports tool calling
+    — callers must handle the empty-tool-calls case by falling back to JSON mode.
+    """
+    last_error: Exception | None = None
+    for model, ollama_base in get_settings().llm_model_chain:
+        try:
+            logger.debug("Trying model (tool-calling): %s", model)
+            response = litellm.completion(
+                model=model,
+                messages=messages,
+                tools=tools,
+                tool_choice="auto",
+                max_tokens=max_tokens,
+                temperature=temperature,
+                api_base=_api_base_for_model(model, ollama_base),
+            )
+            msg = response.choices[0].message
+            text_content: str = msg.content or ""
+            tool_calls: list[dict] = []
+            if hasattr(msg, "tool_calls") and msg.tool_calls:
+                for tc in msg.tool_calls:
+                    try:
+                        args = json.loads(tc.function.arguments)
+                    except (json.JSONDecodeError, AttributeError):
+                        args = {}
+                    tool_calls.append({
+                        "id": getattr(tc, "id", ""),
+                        "name": tc.function.name,
+                        "arguments": args,
+                    })
+            return text_content, tool_calls
+        except Exception as exc:
+            logger.warning("Tool-calling model %s failed: %s", model, exc)
+            last_error = exc
+
+    logger.warning("All models failed for tool calling (%s) — returning no tool calls", last_error)
+    return "", []
 
 
 def parse_llm_json(raw: str, messages: list[dict] | None = None) -> dict:

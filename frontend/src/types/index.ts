@@ -2,6 +2,7 @@ export interface Citation {
   section: string;
   title: string;
   text_snippet: string;
+  source_chunk_ids?: string[];
 }
 
 export interface ConflictDetail {
@@ -28,7 +29,44 @@ export interface ChatMessage {
   disclaimer?: string;
   confidence_score?: number;
   verification_passed?: boolean;
+  conflicts_detected?: boolean;
   timestamp: Date;
+}
+
+// ── SSE streaming types ────────────────────────────────────────────────────
+
+export type SSEEventName =
+  | "planner"
+  | "retriever"
+  | "definition_resolver"
+  | "synthesizer"
+  | "verifier"
+  | "conflict_detector"
+  | "insufficient_coverage"
+  | "error";
+
+export interface SSEEvent {
+  event: SSEEventName;
+  // planner
+  intent?: string;
+  sub_questions?: string[];
+  // retriever
+  chunk_count?: number;
+  xref_count?: number;
+  has_sufficient_coverage?: boolean;
+  // definition_resolver
+  definitions_found?: number;
+  // synthesizer
+  confidence_score?: number;
+  citation_count?: number;
+  // verifier
+  verification_passed?: boolean;
+  issues_count?: number;
+  // conflict_detector / insufficient_coverage — carries full answer
+  conflicts_detected?: boolean;
+  answer?: QueryResponse;
+  // error
+  detail?: string;
 }
 
 export interface SearchResultItem {
@@ -43,6 +81,15 @@ export interface SearchResultItem {
   defines: string | null;
   overflow_chunks: Record<string, unknown>[];
   metadata: Record<string, unknown>;
+  // Enrichment fields
+  ecfr_url: string | null;
+  relevance_tier: "high" | "medium" | "low";
+  display_hint: "definition_card" | "metric_table" | "requirement_list" | "plain_text";
+  has_metrics: boolean;
+  cross_reference_count: number;
+  subpart_name: string | null;
+  full_breadcrumb: string;
+  is_overflow_chunk: boolean;
 }
 
 export interface SearchResponse {

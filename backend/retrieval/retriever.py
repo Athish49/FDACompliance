@@ -39,12 +39,28 @@ logger = logging.getLogger(__name__)
 # Configuration
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _default_qdrant_url() -> str:
+    from config import get_settings
+    return get_settings().qdrant_url
+
+
+def _default_qdrant_api_key() -> Optional[str]:
+    from config import get_settings
+    return get_settings().qdrant_api_key
+
+
+def _default_collection() -> str:
+    from config import get_settings
+    return get_settings().qdrant_collection
+
+
 @dataclass
 class RetrieverConfig:
-    # Qdrant connection
-    qdrant_url: str = "http://localhost:6333"
-    qdrant_api_key: Optional[str] = None
-    collection_name: str = "FDAComplianceAI"
+    # Qdrant connection — defaults read from settings so bare RetrieverConfig()
+    # always points at whatever QDRANT_URL is active in .env.
+    qdrant_url: str = field(default_factory=_default_qdrant_url)
+    qdrant_api_key: Optional[str] = field(default_factory=_default_qdrant_api_key)
+    collection_name: str = field(default_factory=_default_collection)
 
     # BGE-M3 encoder
     model_name: str = "BAAI/bge-m3"
@@ -90,6 +106,74 @@ class SearchResult:
     defines: Optional[str]
     overflow_chunks: list[dict] = field(default_factory=list)
     metadata: dict = field(default_factory=dict)
+    # Enrichment fields for UI and feature building
+    ecfr_url: Optional[str] = None
+    relevance_tier: str = "low"
+    display_hint: str = "plain_text"
+    has_metrics: bool = False
+    cross_reference_count: int = 0
+    subpart_name: Optional[str] = None
+    full_breadcrumb: str = ""
+    is_overflow_chunk: bool = False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Enrichment helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _compute_ecfr_url(hierarchy: dict) -> Optional[str]:
+    """Build a section-level eCFR.gov deep link from hierarchy data."""
+    title = (hierarchy.get("title") or {}).get("number")
+    section = (hierarchy.get("section") or {}).get("number")
+    if not title or not section:
+        return None
+    return f"https://www.ecfr.gov/current/title-{title}/section-{section}"
+
+
+def _compute_relevance_tier(reranker_score: Optional[float]) -> str:
+    """Classify relevance: high ≥ 0.3, medium ≥ 0.05, low below."""
+    if reranker_score is None:
+        return "medium"
+    if reranker_score >= 0.3:
+        return "high"
+    if reranker_score >= 0.05:
+        return "medium"
+    return "low"
+
+
+def _compute_display_hint(chunk_type: Optional[str], metrics: list, paragraph_labels: list) -> str:
+    """Suggest a frontend render mode based on chunk content."""
+    if chunk_type == "definition":
+        return "definition_card"
+    if metrics:
+        return "metric_table"
+    if chunk_type == "paragraph" and len(paragraph_labels) > 1:
+        return "requirement_list"
+    return "plain_text"
+
+
+def _compute_breadcrumb(hierarchy: dict) -> str:
+    """Return a human-readable breadcrumb string for the regulatory path."""
+    parts: list[str] = []
+    for level in ("title", "chapter", "subchapter", "part", "subpart"):
+        node = hierarchy.get(level)
+        if not node or not isinstance(node, dict):
+            continue
+        name = node.get("name") or ""
+        number = node.get("number") or node.get("letter") or ""
+        if name:
+            label = name[:40] + ("…" if len(name) > 40 else "")
+        elif number:
+            label = number
+        else:
+            continue
+        parts.append(label)
+    section = hierarchy.get("section")
+    if section and isinstance(section, dict):
+        sec_num = section.get("number")
+        if sec_num:
+            parts.append(f"§ {sec_num}")
+    return " > ".join(parts)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -208,14 +292,18 @@ class CFRRetriever:
 
         return Filter(must=conditions) if conditions else None
 
+    # ── Query encoding (public) ───────────────────────────────────────────────
+
+    def encode_query(self, query: str) -> tuple[list[float], dict]:
+        """Public alias for _encode_query — used by the v2 retrieval pipeline."""
+        return self._encode_query(query)
+
     # ── Search methods ────────────────────────────────────────────────────
 
-    def _search_dense(
+    def search_dense(
         self, dense_vec: list[float], qdrant_filter, top_k: int
     ) -> list[tuple[str, float, dict]]:
         """Dense vector search. Returns [(point_id, score, payload), ...]."""
-        from qdrant_client.models import NamedVector
-
         results = self.client.query_points(
             collection_name=self.config.collection_name,
             query=dense_vec,
@@ -229,7 +317,11 @@ class CFRRetriever:
             for point in results.points
         ]
 
-    def _search_sparse(
+    # Keep private alias for backward compatibility
+    def _search_dense(self, dense_vec, qdrant_filter, top_k):
+        return self.search_dense(dense_vec, qdrant_filter, top_k)
+
+    def search_sparse(
         self, sparse_dict: dict, qdrant_filter, top_k: int
     ) -> list[tuple[str, float, dict]]:
         """Sparse vector search. Returns [(point_id, score, payload), ...]."""
@@ -250,6 +342,10 @@ class CFRRetriever:
             (point.id, point.score, point.payload)
             for point in results.points
         ]
+
+    # Keep private alias for backward compatibility
+    def _search_sparse(self, sparse_dict, qdrant_filter, top_k):
+        return self.search_sparse(sparse_dict, qdrant_filter, top_k)
 
     # ── RRF fusion ────────────────────────────────────────────────────────
 
@@ -394,15 +490,21 @@ class CFRRetriever:
             if self.config.expand_overflow:
                 overflow = self._expand_overflow(payload)
 
+            hierarchy = payload.get("hierarchy", {})
+            metrics = payload.get("metrics", [])
+            paragraph_labels = payload.get("paragraph_labels", [])
+            cross_refs = payload.get("cross_references_internal", [])
+            chunk_type = payload.get("chunk_type")
+
             results.append(SearchResult(
                 chunk_id=payload.get("chunk_id", ""),
                 score=rrf_score,
                 reranker_score=reranker_score,
                 text=payload.get("text", ""),
                 cfr_citation=payload.get("cfr_citation"),
-                chunk_type=payload.get("chunk_type"),
+                chunk_type=chunk_type,
                 section_preamble=payload.get("section_preamble"),
-                hierarchy=payload.get("hierarchy", {}),
+                hierarchy=hierarchy,
                 defines=payload.get("defines"),
                 overflow_chunks=overflow,
                 metadata={
@@ -410,10 +512,18 @@ class CFRRetriever:
                     "chapter_number": payload.get("chapter_number"),
                     "section_number": payload.get("section_number"),
                     "source_file": payload.get("source_file"),
-                    "cross_references_internal": payload.get("cross_references_internal", []),
-                    "paragraph_labels": payload.get("paragraph_labels", []),
-                    "metrics": payload.get("metrics", []),
+                    "cross_references_internal": cross_refs,
+                    "paragraph_labels": paragraph_labels,
+                    "metrics": metrics,
                 },
+                ecfr_url=_compute_ecfr_url(hierarchy),
+                relevance_tier=_compute_relevance_tier(reranker_score),
+                display_hint=_compute_display_hint(chunk_type, metrics, paragraph_labels),
+                has_metrics=bool(metrics),
+                cross_reference_count=len(cross_refs),
+                subpart_name=(hierarchy.get("subpart") or {}).get("name"),
+                full_breadcrumb=_compute_breadcrumb(hierarchy),
+                is_overflow_chunk=payload.get("is_overflow_chunk", False),
             ))
 
         return results

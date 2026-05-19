@@ -16,7 +16,7 @@ import Link from "next/link";
 import Navbar from "@/components/Navbar";
 import FileUpload from "@/components/FileUpload";
 import SkeletonDocument from "@/components/SkeletonDocument";
-import { analyzeDocument, queryCompliance } from "@/lib/api";
+import { analyzeDocument, queryComplianceStream } from "@/lib/api";
 import type { AnalysisResponse, AnalysisFinding, Citation } from "@/types";
 
 type FollowUpMessage = {
@@ -137,7 +137,7 @@ export default function AnalyzerPage() {
     setIsFollowUpLoading(true);
 
     try {
-      const response = await queryCompliance(text);
+      const response = await queryComplianceStream(text, () => {});
       const assistantMsg: FollowUpMessage = {
         id: (Date.now() + 1).toString(),
         role: "assistant",

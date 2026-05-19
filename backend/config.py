@@ -90,6 +90,14 @@ class Settings:
             gemini_model = gemini_raw if gemini_raw.startswith("gemini/") else f"gemini/{gemini_raw}"
             chain.append((gemini_model, None))
 
+        nvidia_key = (os.getenv("NVIDIA_API_KEY") or "").strip()
+        if nvidia_key:
+            os.environ["NVIDIA_API_KEY"] = nvidia_key
+            os.environ["NVIDIA_NIM_API_KEY"] = nvidia_key  # litellm nvidia_nim provider reads this name
+            nvidia_raw = (os.getenv("NVIDIA_MODEL") or "mistralai/mistral-medium-3.5-128b").strip()
+            nvidia_model = f"nvidia_nim/{nvidia_raw}"
+            chain.append((nvidia_model, None))
+
         # Ollama: sole provider when no cloud keys, otherwise final fallback
         chain.append((ollama_model, ollama_base))
 
