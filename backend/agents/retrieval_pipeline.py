@@ -22,12 +22,16 @@ do not exist in the current Qdrant collection. HyDE (query-time) is fully implem
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeout
+from pathlib import Path
 from typing import Optional
 
 from agents.llm import llm_completion, llm_completion_json, parse_llm_json
+from agents.session_logger import get_session
 from agents.state import ComplianceState
 
 logger = logging.getLogger(__name__)
@@ -40,53 +44,155 @@ FLOW_B_TOP_N = 40
 TARGET_CANDIDATE_POOL = 80
 RERANKER_TOP_K = 12
 CRAG_MAX_RETRIES = 3
-CRAG_THRESHOLD_HIGH = 0.70
-CRAG_THRESHOLD_LOW = 0.45
+CRAG_THRESHOLD_HIGH = 0.70       # Min top score for standard CORRECT path
+CRAG_THRESHOLD_LOW = 0.45        # Min score for AMBIGUOUS / supporting chunk
+CRAG_THRESHOLD_VERY_HIGH = 0.85  # Relaxed CORRECT: only 1 supporting chunk needed
+CRAG_AMBIGUOUS_SOFT_CORRECT = 0.70  # AMBIGUOUS with top >= this → skip supplemental
+CRAG_BEST_CHUNK_MIN_SCORE = 0.30    # Min top_score to update best_chunks_seen
 PART_CLASSIFIER_CONFIDENCE_MIN = 0.60
 
 CLAIM_SIMILARITY_THRESHOLD = 0.65
 CLAIM_KEYWORD_OVERLAP_THRESHOLD = 0.50
 
-# ── Shared retriever instance ──────────────────────────────────────────────────
+# ── Shared retriever instance (thread-safe lazy init) ─────────────────────────
 
 _retriever = None
+_retriever_lock = threading.Lock()
 
 
 def _get_retriever():
     global _retriever
     if _retriever is None:
-        from retrieval.retriever import CFRRetriever, RetrieverConfig
-        _retriever = CFRRetriever(RetrieverConfig())
+        with _retriever_lock:
+            if _retriever is None:
+                from retrieval.retriever import CFRRetriever, RetrieverConfig
+                _retriever = CFRRetriever(RetrieverConfig())
     return _retriever
+
+
+# ── CFR Part index + domain filter ────────────────────────────────────────────
+
+_PART_INDEX_PATH = Path(__file__).parent.parent / "data" / "cfr_part_index.json"
+
+_part_index_cache: dict | None = None
+_part_index_lock = threading.Lock()
+
+# Maps fda_domain values (from query analyzer) to the subchapter letters that
+# contain relevant parts. Used to pre-filter the part list before sending to LLM.
+_DOMAIN_TO_SUBCHAPTERS: dict[str, set[str]] = {
+    "food":           {"B"},
+    "drug":           {"C", "D"},
+    "animal":         {"E"},
+    "biological":     {"F"},
+    "cosmetic":       {"G"},
+    "device":         {"H", "I", "J"},
+    "tobacco":        {"K"},
+    "administrative": {"A", "L"},
+}
+
+
+def _load_part_index() -> dict:
+    """Lazy-load and cache the CFR part index. Returns empty dict if file absent."""
+    global _part_index_cache
+    if _part_index_cache is None:
+        with _part_index_lock:
+            if _part_index_cache is None:
+                if _PART_INDEX_PATH.exists():
+                    with open(_PART_INDEX_PATH, encoding="utf-8") as fh:
+                        _part_index_cache = json.load(fh).get("parts", {})
+                    logger.info(
+                        "[part_classifier] Loaded %d parts from %s",
+                        len(_part_index_cache),
+                        _PART_INDEX_PATH,
+                    )
+                else:
+                    logger.warning(
+                        "[part_classifier] %s not found — run ingestion to generate it",
+                        _PART_INDEX_PATH,
+                    )
+                    _part_index_cache = {}
+    return _part_index_cache
+
+
+def _build_parts_context(fda_domain: str | None) -> str:
+    """
+    Return a compact text list of CFR parts filtered to the relevant domain.
+    If fda_domain is None or unrecognised, returns all parts (no filter).
+    Returns empty string if the index file hasn't been generated yet.
+    """
+    parts = _load_part_index()
+    if not parts:
+        return ""
+
+    target_subchapters: set[str] = set()
+    if fda_domain:
+        target_subchapters = _DOMAIN_TO_SUBCHAPTERS.get(fda_domain.lower(), set())
+
+    lines: list[str] = []
+    for num, info in parts.items():
+        if target_subchapters and info.get("subchapter") not in target_subchapters:
+            continue
+        lines.append(f"Part {num}: {info['title']}")
+
+    if not lines:
+        # Domain filter matched nothing — fall back to full list
+        logger.debug(
+            "[part_classifier] Domain filter '%s' matched no parts — using full index",
+            fda_domain,
+        )
+        lines = [f"Part {num}: {info['title']}" for num, info in parts.items()]
+
+    return "\n".join(lines)
 
 
 # ── CFR Part classifier ────────────────────────────────────────────────────────
 
-_PART_CLASSIFIER_SYSTEM = """\
-Given the following FDA compliance question, predict which Title 21 CFR Part number(s) are most
+_PART_CLASSIFIER_SYSTEM_BASE = """\
+Given the following FDA compliance sub-question, predict which Title 21 CFR Part number(s) are most
 likely to contain the relevant regulations.  Return ONLY valid JSON:
 {"parts": ["101", "102"], "confidence": 0.85}
-- confidence is 0.0-1.0 reflecting certainty
+- confidence is 0.0-1.0 reflecting your certainty
 - parts is a list of numeric strings (without "Part" prefix)
-- If unsure, return confidence < 0.60 and parts may be empty"""
+- If unsure, return confidence < 0.60 and parts may be empty
+- Hint sections (if provided below) come from the original user query — treat as context only.
+  If this sub-question covers a different topic, classify based on the sub-question alone."""
 
 
-def _classify_cfr_parts(sub_question_text: str, explicit_refs: list[str]) -> tuple[list[str], float]:
-    """Return (predicted_part_numbers, confidence). Empty list = skip Flow A."""
-    # If user gave explicit CFR refs, extract part numbers directly
+def _build_classifier_messages(
+    sub_question_text: str,
+    explicit_refs: list[str],
+    fda_domain: str | None,
+) -> list[dict]:
+    """Build the classifier prompt, injecting filtered part context when available."""
+    parts_context = _build_parts_context(fda_domain)
+
+    system = _PART_CLASSIFIER_SYSTEM_BASE
+    if parts_context:
+        system += f"\n\nAvailable CFR Parts in this regulatory domain:\n{parts_context}"
+
+    user_content = sub_question_text
     if explicit_refs:
-        parts = []
-        for ref in explicit_refs:
-            m = re.match(r"(\d+)", ref.strip())
-            if m:
-                parts.append(m.group(1))
-        if parts:
-            return list(set(parts)), 1.0
+        user_content += f"\n\nHint — original query mentioned these CFR sections: {explicit_refs}"
 
-    messages = [
-        {"role": "system", "content": _PART_CLASSIFIER_SYSTEM},
-        {"role": "user", "content": sub_question_text},
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user_content},
     ]
+
+
+def _classify_cfr_parts(
+    sub_question_text: str,
+    explicit_refs: list[str],
+    fda_domain: str | None = None,
+) -> tuple[list[str], float]:
+    """Return (predicted_part_numbers, confidence). Empty list = skip Flow A.
+
+    Uses a domain-filtered view of the CFR part index so the LLM receives
+    only parts relevant to the query's regulatory area (~15-60 parts vs 256).
+    explicit_refs are hints, not overrides — the LLM classifies based on the
+    sub-question content and can ignore the hints if they are off-topic.
+    """
+    messages = _build_classifier_messages(sub_question_text, explicit_refs, fda_domain)
     try:
         raw = llm_completion_json(messages, max_tokens=128, temperature=0.1)
         result = parse_llm_json(raw, messages)
@@ -205,12 +311,19 @@ def _rerank_candidates(
 # ── CRAG Evaluator ─────────────────────────────────────────────────────────────
 
 def _crag_verdict(reranked_chunks: list[dict]) -> str:
-    """Determine CRAG verdict from reranker scores."""
+    """Determine CRAG verdict from reranker scores.
+
+    Two CORRECT paths:
+    - Very high top score (>= CRAG_THRESHOLD_VERY_HIGH): only 1 supporting chunk needed.
+    - Standard high top score (>= CRAG_THRESHOLD_HIGH): requires 2+ supporting chunks.
+    """
     if not reranked_chunks:
         return "INCORRECT"
     top_score = reranked_chunks[0]["reranker_score"]
     above_low = sum(1 for c in reranked_chunks if c["reranker_score"] >= CRAG_THRESHOLD_LOW)
 
+    if top_score >= CRAG_THRESHOLD_VERY_HIGH and above_low >= 1:
+        return "CORRECT"
     if top_score >= CRAG_THRESHOLD_HIGH and above_low >= 2:
         return "CORRECT"
     if top_score >= CRAG_THRESHOLD_LOW:
@@ -226,9 +339,41 @@ _REFORMULATE_REPHRASE_SYSTEM = """\
 Rewrite the following FDA regulatory query from a completely different angle — focus on the
 underlying requirement rather than the specific claim.  Output only the rewritten query."""
 
+_REFORMULATE_MIN_LEN = 15
 
-def _reformulate_query(sub_q_text: str, retry_count: int, variants: dict) -> str:
-    """Return a reformulated query string based on retry strategy."""
+
+def _extract_best_section(best_chunks_seen: list[dict]) -> str:
+    """Extract a CFR section number from the best chunks seen across retries.
+
+    Used by the section anchor strategy: even low-scoring chunks carry a real
+    section number that can be appended to the query to boost sparse retrieval
+    toward the correct regulatory area.
+    """
+    for chunk in best_chunks_seen[:3]:
+        sec = (chunk.get("hierarchy") or {}).get("section", {}).get("number", "")
+        if sec:
+            return sec
+        citation = chunk.get("cfr_citation", "")
+        if citation:
+            m = re.search(r"(\d+\.\d+)", citation)
+            if m:
+                return m.group(1)
+    return ""
+
+
+def _reformulate_query(
+    sub_q_text: str,
+    retry_count: int,
+    variants: dict,
+    best_chunks_seen: list[dict] | None = None,
+) -> str:
+    """Return a reformulated query string based on retry strategy.
+
+    Strategies by retry_count:
+      0 — synonym expansion (LLM call)
+      1 — full rephrase from different angle (LLM call)
+      2 — section anchor (append best-seen CFR section) or HyDE/stepback fallback
+    """
     if retry_count == 0:
         messages = [
             {"role": "system", "content": _REFORMULATE_SYNONYM_SYSTEM},
@@ -248,10 +393,23 @@ def _reformulate_query(sub_q_text: str, retry_count: int, variants: dict) -> str
         except Exception:
             return sub_q_text
     else:
-        # Use HyDE or stepback variant
+        # Strategy 2: section anchor — use the top chunk's CFR section from the
+        # best previous attempt to anchor sparse retrieval toward the right area.
+        if best_chunks_seen:
+            sec = _extract_best_section(best_chunks_seen)
+            if sec:
+                anchored = f"{sub_q_text} 21 CFR §{sec}"
+                logger.info("[crag] section anchor strategy — appending §%s to query", sec)
+                return anchored
+
+        # Fallback: HyDE passage or stepback variant (pre-generated at decomposition)
         hyde = variants.get("hyde_passage", "")
         stepback = variants.get("stepback", "")
-        return hyde if hyde and hyde != sub_q_text else (stepback or sub_q_text)
+        if hyde and hyde != sub_q_text and len(hyde.strip()) >= _REFORMULATE_MIN_LEN:
+            return hyde
+        if stepback and len(stepback.strip()) >= _REFORMULATE_MIN_LEN:
+            return stepback
+        return sub_q_text
 
 
 # ── Cross-Reference Resolution ─────────────────────────────────────────────────
@@ -573,6 +731,7 @@ def run_sub_question_pipeline(
     query: str,
     analyzed_query: dict,
     sub_question: dict,
+    session_id: str = "",
 ) -> dict:
     """
     Full per-sub-question retrieval, evaluation, and synthesis pipeline.
@@ -582,11 +741,19 @@ def run_sub_question_pipeline(
     sub_q_text = sub_question["text"]
     variants = sub_question.get("variants", {})
     intent_type = analyzed_query.get("intent_type", "compliance_check")
-    explicit_refs = analyzed_query.get("entities", {}).get("explicit_refs", [])
+    entities = analyzed_query.get("entities", {})
+    explicit_refs = entities.get("explicit_refs", [])
+    fda_domain = entities.get("fda_domain")
+
+    sl = get_session(session_id) if session_id else None
+    sq_label = sl.get_sq_label(sub_q_id) if sl else sub_q_id[:8]
+
+    logger.info("[retrieval] Starting pipeline for %s — '%s'", sq_label, sub_q_text[:100])
 
     reformulation_log: list[str] = []
     crag_verdict = "INCORRECT"
     reranked_chunks: list[dict] = []
+    best_chunks_seen: list[dict] = []   # best reranked result across all retries
     caveat_flag = False
 
     current_primary = variants.get("primary", sub_q_text)
@@ -606,7 +773,7 @@ def run_sub_question_pipeline(
 
         # ── 2. Flow A — Routed retrieval ──────────────────────────────────────
         flow_a_lists: list[list[tuple[str, float, dict]]] = []
-        parts, part_confidence = _classify_cfr_parts(sub_q_text, explicit_refs)
+        parts, part_confidence = _classify_cfr_parts(sub_q_text, explicit_refs, fda_domain)
 
         if parts and part_confidence >= PART_CLASSIFIER_CONFIDENCE_MIN:
             part_filter = _build_part_filter(parts)
@@ -652,19 +819,42 @@ def run_sub_question_pipeline(
 
         # ── 6. CRAG evaluation ────────────────────────────────────────────────
         crag_verdict = _crag_verdict(reranked_chunks)
+        top_score = reranked_chunks[0]["reranker_score"] if reranked_chunks else 0.0
+        reformulation_used = reformulation_log[-1] if reformulation_log and retry_count > 0 else None
         logger.info(
-            "CRAG [retry=%d] sub-q=%s: verdict=%s, top_score=%.3f",
-            retry_count, sub_q_id[:8], crag_verdict,
-            reranked_chunks[0]["reranker_score"] if reranked_chunks else 0.0,
+            "[crag] %s | attempt=%d | verdict=%s | top_score=%.3f | chunks=%d",
+            sq_label, retry_count + 1, crag_verdict, top_score, len(reranked_chunks),
         )
+        if sl:
+            sl.log_sq_attempt(
+                sq_id=sub_q_id,
+                attempt_num=retry_count,
+                crag_verdict=crag_verdict,
+                top_score=top_score,
+                retrieved_chunks=reranked_chunks,
+                reformulation=reformulation_used,
+            )
+
+        # ── Track best chunks across all attempts ─────────────────────────────
+        if reranked_chunks and top_score > CRAG_BEST_CHUNK_MIN_SCORE:
+            if not best_chunks_seen or top_score > best_chunks_seen[0]["reranker_score"]:
+                best_chunks_seen = reranked_chunks[:]
 
         if crag_verdict == "CORRECT":
             caveat_flag = False
             break
 
         if crag_verdict == "AMBIGUOUS":
-            # Supplemental broad search with primary variant
             caveat_flag = True
+            if top_score >= CRAG_AMBIGUOUS_SOFT_CORRECT:
+                # Top chunk is already strong — supplemental search risks introducing
+                # noise. Treat as soft-CORRECT and proceed.
+                logger.info(
+                    "[crag] %s | AMBIGUOUS soft-CORRECT (top_score=%.3f >= %.2f) — skipping supplemental",
+                    sq_label, top_score, CRAG_AMBIGUOUS_SOFT_CORRECT,
+                )
+                break
+            # Genuinely ambiguous: run supplemental broad search to augment pool
             enc = encodings[0]
             if enc[0]:
                 try:
@@ -679,13 +869,76 @@ def run_sub_question_pipeline(
             if retry_count >= CRAG_MAX_RETRIES:
                 crag_verdict = "LOW_CONFIDENCE"
                 caveat_flag = True
-                reranked_chunks = reranked_chunks or fused[:RERANKER_TOP_K]
+                # Use best chunks seen if they scored higher than the current attempt
+                if best_chunks_seen:
+                    current_top = reranked_chunks[0]["reranker_score"] if reranked_chunks else 0.0
+                    if best_chunks_seen[0]["reranker_score"] > current_top:
+                        reranked_chunks = best_chunks_seen
+                        logger.info(
+                            "[crag] %s | LOW_CONFIDENCE — restoring best_chunks_seen (top=%.3f)",
+                            sq_label, reranked_chunks[0]["reranker_score"],
+                        )
+                if not reranked_chunks:
+                    reranked_chunks = fused[:RERANKER_TOP_K]
                 break
             # Reformulate and retry
-            new_primary = _reformulate_query(sub_q_text, retry_count, variants)
+            new_primary = _reformulate_query(sub_q_text, retry_count, variants, best_chunks_seen)
+            # Validate reformulation: reject empty, too-short, or identical to current query
+            if (
+                not new_primary
+                or len(new_primary.strip()) < _REFORMULATE_MIN_LEN
+                or new_primary.strip() == current_primary.strip()
+            ):
+                logger.warning(
+                    "[crag] %s | reformulation invalid (got %r) — keeping previous query",
+                    sq_label, (new_primary or "")[:60],
+                )
+                new_primary = current_primary
             reformulation_log.append(new_primary)
-            logger.info("CRAG reformulation [%d]: %s", retry_count, new_primary[:80])
+            logger.info(
+                "[crag] %s | reformulating for attempt %d → '%s'",
+                sq_label, retry_count + 2, new_primary[:80],
+            )
             current_primary = new_primary
+
+    # ── Skip synthesis when retrieval found nothing usable ────────────────────
+    # Condition: exhausted all retries (LOW_CONFIDENCE) AND best_chunks_seen is
+    # empty (no attempt ever scored above CRAG_BEST_CHUNK_MIN_SCORE=0.30).
+    # These sub-answers are pure noise — they drag down confidence averaging and
+    # inject irrelevant citations into the final answer. Return immediately.
+    if crag_verdict == "LOW_CONFIDENCE" and not best_chunks_seen:
+        logger.warning(
+            "[retrieval] %s | SKIPPED — LOW_CONFIDENCE with no usable chunks found across all retries",
+            sq_label,
+        )
+        skipped_sub_answer = {
+            "sub_question_id": sub_q_id,
+            "sub_question_text": sub_q_text,
+            "answer": "",
+            "confidence": 0.0,
+            "crag_verdict": "LOW_CONFIDENCE",
+            "caveat_flag": True,
+            "chunks_used": [],
+            "cross_refs_resolved": [],
+            "claim_verification": [],
+            "unverified_claims": [],
+            "citations": [],
+            "caveats": ["LOW_CONFIDENCE_RETRIEVAL"],
+            "flags": ["MAX_RETRIES_EXCEEDED", "SKIPPED_NO_EVIDENCE"],
+            "reformulation_log": reformulation_log,
+            "skipped": True,
+        }
+        if sl:
+            sl.log_sq_answer(
+                sq_id=sub_q_id,
+                crag_verdict="LOW_CONFIDENCE",
+                confidence=0.0,
+                citations_count=0,
+                answer_summary="SKIPPED — no usable chunks found",
+                caveats=["LOW_CONFIDENCE_RETRIEVAL"],
+                flags=["MAX_RETRIES_EXCEEDED", "SKIPPED_NO_EVIDENCE"],
+            )
+        return {"sub_answers": [skipped_sub_answer]}
 
     # ── 7. Cross-reference resolution ─────────────────────────────────────────
     already_fetched: set[str] = {
@@ -756,9 +1009,19 @@ def run_sub_question_pipeline(
     }
 
     logger.info(
-        "Sub-answer [%s]: crag=%s, confidence=%.2f, citations=%d",
-        sub_q_id[:8], crag_verdict, confidence, len(citations),
+        "[retrieval] %s complete | crag=%s | confidence=%.2f | citations=%d | cross_refs=%d",
+        sq_label, crag_verdict, confidence, len(citations), len(cross_refs_resolved),
     )
+    if sl:
+        sl.log_sq_answer(
+            sq_id=sub_q_id,
+            crag_verdict=crag_verdict,
+            confidence=confidence,
+            citations_count=len(citations),
+            answer_summary=final_answer_text,
+            caveats=caveats,
+            flags=flags,
+        )
     return sub_answer
 
 
@@ -769,9 +1032,10 @@ def process_sub_question_node(state: dict) -> dict:
     query = state["query"]
     analyzed_query = state.get("analyzed_query", {})
     sub_question = state["sub_question"]
+    session_id = state.get("session_id", "")
 
     try:
-        sub_answer = run_sub_question_pipeline(query, analyzed_query, sub_question)
+        sub_answer = run_sub_question_pipeline(query, analyzed_query, sub_question, session_id)
     except Exception as exc:
         logger.exception("Sub-question pipeline failed for %s: %s", sub_question.get("id", "?"), exc)
         sub_answer = {

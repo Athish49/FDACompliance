@@ -1,0 +1,1286 @@
+{
+  "generated_at": "2026-05-20T22:55:32.038921+00:00",
+  "total_parts": 256,
+  "parts": {
+    "1": {
+      "title": "General Enforcement Regulations",
+      "subchapter": "A",
+      "subchapter_name": "General"
+    },
+    "2": {
+      "title": "General Administrative Rulings And Decisions",
+      "subchapter": "A",
+      "subchapter_name": "General"
+    },
+    "3": {
+      "title": "Product Jurisdiction",
+      "subchapter": "A",
+      "subchapter_name": "General"
+    },
+    "4": {
+      "title": "Regulation Of Combination Products",
+      "subchapter": "A",
+      "subchapter_name": "General"
+    },
+    "5": {
+      "title": "Organization",
+      "subchapter": "A",
+      "subchapter_name": "General"
+    },
+    "7": {
+      "title": "Enforcement Policy",
+      "subchapter": "A",
+      "subchapter_name": "General"
+    },
+    "10": {
+      "title": "Administrative Practices And Procedures",
+      "subchapter": "A",
+      "subchapter_name": "General"
+    },
+    "11": {
+      "title": "Electronic Records; Electronic Signatures",
+      "subchapter": "A",
+      "subchapter_name": "General"
+    },
+    "12": {
+      "title": "Formal Evidentiary Public Hearing",
+      "subchapter": "A",
+      "subchapter_name": "General"
+    },
+    "13": {
+      "title": "Public Hearing Before A Public Board Of Inquiry",
+      "subchapter": "A",
+      "subchapter_name": "General"
+    },
+    "14": {
+      "title": "Public Hearing Before A Public Advisory Committee",
+      "subchapter": "A",
+      "subchapter_name": "General"
+    },
+    "15": {
+      "title": "Public Hearing Before The Commissioner",
+      "subchapter": "A",
+      "subchapter_name": "General"
+    },
+    "16": {
+      "title": "Regulatory Hearing Before The Food And Drug Administration",
+      "subchapter": "A",
+      "subchapter_name": "General"
+    },
+    "17": {
+      "title": "Civil Money Penalties Hearings",
+      "subchapter": "A",
+      "subchapter_name": "General"
+    },
+    "19": {
+      "title": "Standards Of Conduct And Conflicts Of Interest",
+      "subchapter": "A",
+      "subchapter_name": "General"
+    },
+    "20": {
+      "title": "Public Information",
+      "subchapter": "A",
+      "subchapter_name": "General"
+    },
+    "21": {
+      "title": "Protection Of Privacy",
+      "subchapter": "A",
+      "subchapter_name": "General"
+    },
+    "25": {
+      "title": "Environmental Impact Considerations",
+      "subchapter": "A",
+      "subchapter_name": "General"
+    },
+    "26": {
+      "title": "Mutual Recognition Of Pharmaceutical Good Manufacturing Practice Reports, Medical Device Quality System Audit Reports, And Certain Medical Device Product Evaluation Reports: United States And The European Community",
+      "subchapter": "A",
+      "subchapter_name": "General"
+    },
+    "50": {
+      "title": "Protection Of Human Subjects",
+      "subchapter": "A",
+      "subchapter_name": "General"
+    },
+    "54": {
+      "title": "Financial Disclosure By Clinical Investigators",
+      "subchapter": "A",
+      "subchapter_name": "General"
+    },
+    "56": {
+      "title": "Institutional Review Boards",
+      "subchapter": "A",
+      "subchapter_name": "General"
+    },
+    "58": {
+      "title": "Good Laboratory Practice For Nonclinical Laboratory Studies",
+      "subchapter": "A",
+      "subchapter_name": "General"
+    },
+    "60": {
+      "title": "Patent Term Restoration",
+      "subchapter": "A",
+      "subchapter_name": "General"
+    },
+    "70": {
+      "title": "Color Additives",
+      "subchapter": "A",
+      "subchapter_name": "General"
+    },
+    "71": {
+      "title": "Color Additive Petitions",
+      "subchapter": "A",
+      "subchapter_name": "General"
+    },
+    "73": {
+      "title": "Listing Of Color Additives Exempt From Certification",
+      "subchapter": "A",
+      "subchapter_name": "General"
+    },
+    "74": {
+      "title": "Listing Of Color Additives Subject To Certification",
+      "subchapter": "A",
+      "subchapter_name": "General"
+    },
+    "80": {
+      "title": "Color Additive Certification",
+      "subchapter": "A",
+      "subchapter_name": "General"
+    },
+    "81": {
+      "title": "General Specifications And General Restrictions For Provisional Color Additives For Use In Foods, Drugs, And Cosmetics",
+      "subchapter": "A",
+      "subchapter_name": "General"
+    },
+    "82": {
+      "title": "Listing Of Certified Provisionally Listed Colors And Specifications",
+      "subchapter": "A",
+      "subchapter_name": "General"
+    },
+    "99": {
+      "title": "Dissemination Of Information On Unapproved/New Uses For Marketed Drugs, Biologics, And Devices",
+      "subchapter": "A",
+      "subchapter_name": "General"
+    },
+    "100": {
+      "title": "General",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption"
+    },
+    "101": {
+      "title": "Food Labeling",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption"
+    },
+    "102": {
+      "title": "Common Or Usual Name For Nonstandardized Foods",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption"
+    },
+    "104": {
+      "title": "Nutritional Quality Guidelines For Foods",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption"
+    },
+    "105": {
+      "title": "Foods For Special Dietary Use",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption"
+    },
+    "106": {
+      "title": "Infant Formula Requirements Pertaining To Current Good Manufacturing Practice, Quality Control Procedures, Quality Factors, Records And Reports, And Notifications",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption"
+    },
+    "107": {
+      "title": "Infant Formula",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption"
+    },
+    "108": {
+      "title": "Emergency Permit Control",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption"
+    },
+    "109": {
+      "title": "Unavoidable Contaminants In Food For Human Consumption And Food-Packaging Material",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption"
+    },
+    "110": {
+      "title": "Current Good Manufacturing Practice In Manufacturing, Packing, Or Holding Human Food",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption"
+    },
+    "111": {
+      "title": "Current Good Manufacturing Practice In Manufacturing, Packaging, Labeling, Or Holding Operations For Dietary Supplements",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption"
+    },
+    "112": {
+      "title": "Standards For The Growing, Harvesting, Packing, And Holding Of Produce For Human Consumption",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption"
+    },
+    "113": {
+      "title": "Thermally Processed Low-Acid Foods Packaged In Hermetically Sealed Containers",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption"
+    },
+    "114": {
+      "title": "Acidified Foods",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption"
+    },
+    "115": {
+      "title": "Shell Eggs",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption"
+    },
+    "117": {
+      "title": "Current Good Manufacturing Practice, Hazard Analysis, And Risk-Based Preventive Controls For Human Food",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption"
+    },
+    "118": {
+      "title": "Production, Storage, And Transportation Of Shell Eggs",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption"
+    },
+    "119": {
+      "title": "Dietary Supplements That Present A Significant Or Unreasonable Risk",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption"
+    },
+    "120": {
+      "title": "Hazard Analysis And Critical Control Point (Haccp) Systems",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption"
+    },
+    "121": {
+      "title": "Mitigation Strategies To Protect Food Against Intentional Adulteration",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption"
+    },
+    "123": {
+      "title": "Fish And Fishery Products",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption"
+    },
+    "129": {
+      "title": "Processing And Bottling Of Bottled Drinking Water",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption"
+    },
+    "130": {
+      "title": "Food Standards: General",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption"
+    },
+    "131": {
+      "title": "Milk And Cream",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption"
+    },
+    "133": {
+      "title": "Cheeses And Related Cheese Products",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption"
+    },
+    "135": {
+      "title": "Frozen Desserts",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption"
+    },
+    "136": {
+      "title": "Bakery Products",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption"
+    },
+    "137": {
+      "title": "Cereal Flours And Related Products",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption"
+    },
+    "139": {
+      "title": "Macaroni And Noodle Products",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption"
+    },
+    "145": {
+      "title": "Canned Fruits",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption"
+    },
+    "146": {
+      "title": "Canned Fruit Juices",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption"
+    },
+    "150": {
+      "title": "Fruit Butters, Jellies, Preserves, And Related Products",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption"
+    },
+    "152": {
+      "title": "Fruit Pies",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption"
+    },
+    "155": {
+      "title": "Canned Vegetables",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption"
+    },
+    "156": {
+      "title": "Vegetable Juices",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption"
+    },
+    "158": {
+      "title": "Frozen Vegetables",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption"
+    },
+    "160": {
+      "title": "Eggs And Egg Products",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption"
+    },
+    "161": {
+      "title": "Fish And Shellfish",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption"
+    },
+    "163": {
+      "title": "Cacao Products",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption"
+    },
+    "164": {
+      "title": "Tree Nut And Peanut Products",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption"
+    },
+    "165": {
+      "title": "Beverages",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption"
+    },
+    "166": {
+      "title": "Margarine",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption"
+    },
+    "168": {
+      "title": "Sweeteners And Table Sirups",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption"
+    },
+    "169": {
+      "title": "Food Dressings And Flavorings",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption"
+    },
+    "170": {
+      "title": "Food Additives",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption (Continued)"
+    },
+    "171": {
+      "title": "Food Additive Petitions",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption (Continued)"
+    },
+    "172": {
+      "title": "Food Additives Permitted For Direct Addition To Food For Human Consumption",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption (Continued)"
+    },
+    "173": {
+      "title": "Secondary Direct Food Additives Permitted In Food For Human Consumption",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption (Continued)"
+    },
+    "174": {
+      "title": "Indirect Food Additives: General",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption (Continued)"
+    },
+    "175": {
+      "title": "Indirect Food Additives: Adhesives And Components Of Coatings",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption (Continued)"
+    },
+    "176": {
+      "title": "Indirect Food Additives: Paper And Paperboard Components",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption (Continued)"
+    },
+    "177": {
+      "title": "Indirect Food Additives: Polymers",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption (Continued)"
+    },
+    "178": {
+      "title": "Indirect Food Additives: Adjuvants, Production Aids, And Sanitizers",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption (Continued)"
+    },
+    "179": {
+      "title": "Irradiation In The Production, Processing And Handling Of Food",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption (Continued)"
+    },
+    "180": {
+      "title": "Food Additives Permitted In Food Or In Contact With Food On An Interim Basis Pending Additional Study",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption (Continued)"
+    },
+    "181": {
+      "title": "Prior-Sanctioned Food Ingredients",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption (Continued)"
+    },
+    "182": {
+      "title": "Substances Generally Recognized As Safe",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption (Continued)"
+    },
+    "184": {
+      "title": "Direct Food Substances Affirmed As Generally Recognized As Safe",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption (Continued)"
+    },
+    "186": {
+      "title": "Indirect Food Substances Affirmed As Generally Recognized As Safe",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption (Continued)"
+    },
+    "189": {
+      "title": "Substances Prohibited From Use In Human Food",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption (Continued)"
+    },
+    "190": {
+      "title": "Dietary Supplements",
+      "subchapter": "B",
+      "subchapter_name": "Food For Human Consumption (Continued)"
+    },
+    "200": {
+      "title": "General",
+      "subchapter": "C",
+      "subchapter_name": "Drugs: General"
+    },
+    "201": {
+      "title": "Labeling",
+      "subchapter": "C",
+      "subchapter_name": "Drugs: General"
+    },
+    "202": {
+      "title": "Prescription Drug Advertising",
+      "subchapter": "C",
+      "subchapter_name": "Drugs: General"
+    },
+    "203": {
+      "title": "Prescription Drug Marketing",
+      "subchapter": "C",
+      "subchapter_name": "Drugs: General"
+    },
+    "205": {
+      "title": "Guidelines For State Licensing Of Wholesale Prescription Drug Distributors",
+      "subchapter": "C",
+      "subchapter_name": "Drugs: General"
+    },
+    "206": {
+      "title": "Imprinting Of Solid Oral Dosage Form Drug Products For Human Use",
+      "subchapter": "C",
+      "subchapter_name": "Drugs: General"
+    },
+    "207": {
+      "title": "Requirements For Foreign And Domestic Establishment Registration And Listing For Human Drugs, Including Drugs That Are Regulated Under A Biologics License Application, And Animal Drugs, And The National Drug Code",
+      "subchapter": "C",
+      "subchapter_name": "Drugs: General"
+    },
+    "208": {
+      "title": "Medication Guides For Prescription Drug Products",
+      "subchapter": "C",
+      "subchapter_name": "Drugs: General"
+    },
+    "209": {
+      "title": "Requirement For Authorized Dispensers And Pharmacies To Distribute A Side Effects Statement",
+      "subchapter": "C",
+      "subchapter_name": "Drugs: General"
+    },
+    "210": {
+      "title": "Current Good Manufacturing Practice In Manufacturing, Processing, Packing, Or Holding Of Drugs; General",
+      "subchapter": "C",
+      "subchapter_name": "Drugs: General"
+    },
+    "211": {
+      "title": "Current Good Manufacturing Practice For Finished Pharmaceuticals",
+      "subchapter": "C",
+      "subchapter_name": "Drugs: General"
+    },
+    "212": {
+      "title": "Current Good Manufacturing Practice For Positron Emission Tomography Drugs",
+      "subchapter": "C",
+      "subchapter_name": "Drugs: General"
+    },
+    "216": {
+      "title": "Human Drug Compounding",
+      "subchapter": "C",
+      "subchapter_name": "Drugs: General"
+    },
+    "225": {
+      "title": "Current Good Manufacturing Practice For Medicated Feeds",
+      "subchapter": "C",
+      "subchapter_name": "Drugs: General"
+    },
+    "226": {
+      "title": "Current Good Manufacturing Practice For Type A Medicated Articles",
+      "subchapter": "C",
+      "subchapter_name": "Drugs: General"
+    },
+    "250": {
+      "title": "Special Requirements For Specific Human Drugs",
+      "subchapter": "C",
+      "subchapter_name": "Drugs: General"
+    },
+    "251": {
+      "title": "Section 804 Importation Program",
+      "subchapter": "C",
+      "subchapter_name": "Drugs: General"
+    },
+    "290": {
+      "title": "Controlled Drugs",
+      "subchapter": "C",
+      "subchapter_name": "Drugs: General"
+    },
+    "299": {
+      "title": "Drugs; Official Names And Established Names",
+      "subchapter": "C",
+      "subchapter_name": "Drugs: General"
+    },
+    "300": {
+      "title": "General",
+      "subchapter": "D",
+      "subchapter_name": "Drugs For Human Use"
+    },
+    "310": {
+      "title": "New Drugs",
+      "subchapter": "D",
+      "subchapter_name": "Drugs For Human Use"
+    },
+    "312": {
+      "title": "Investigational New Drug Application",
+      "subchapter": "D",
+      "subchapter_name": "Drugs For Human Use"
+    },
+    "314": {
+      "title": "Applications For Fda Approval To Market A New Drug",
+      "subchapter": "D",
+      "subchapter_name": "Drugs For Human Use"
+    },
+    "315": {
+      "title": "Diagnostic Radiopharmaceuticals",
+      "subchapter": "D",
+      "subchapter_name": "Drugs For Human Use"
+    },
+    "316": {
+      "title": "Orphan Drugs",
+      "subchapter": "D",
+      "subchapter_name": "Drugs For Human Use"
+    },
+    "317": {
+      "title": "Qualifying Pathogens",
+      "subchapter": "D",
+      "subchapter_name": "Drugs For Human Use"
+    },
+    "320": {
+      "title": "Bioavailability And Bioequivalence Requirements",
+      "subchapter": "D",
+      "subchapter_name": "Drugs For Human Use"
+    },
+    "328": {
+      "title": "Over-The-Counter Drug Products Intended For Oral Ingestion That Contain Alcohol",
+      "subchapter": "D",
+      "subchapter_name": "Drugs For Human Use"
+    },
+    "329": {
+      "title": "Nonprescription Human Drug Products Subject To Section 760 Of The Federal Food, Drug, And Cosmetic Act",
+      "subchapter": "D",
+      "subchapter_name": "Drugs For Human Use"
+    },
+    "330": {
+      "title": "Over-The-Counter (Otc) Human Drugs Which Are Generally Recognized As Safe And Effective And Not Misbranded",
+      "subchapter": "D",
+      "subchapter_name": "Drugs For Human Use"
+    },
+    "331": {
+      "title": "Antacid Products For Over-The-Counter (Otc) Human Use",
+      "subchapter": "D",
+      "subchapter_name": "Drugs For Human Use"
+    },
+    "332": {
+      "title": "Antiflatulent Products For Over-The-Counter Human Use",
+      "subchapter": "D",
+      "subchapter_name": "Drugs For Human Use"
+    },
+    "333": {
+      "title": "Topical Antimicrobial Drug Products For Over-The-Counter Human Use",
+      "subchapter": "D",
+      "subchapter_name": "Drugs For Human Use"
+    },
+    "335": {
+      "title": "Antidiarrheal Drug Products For Over-The-Counter Human Use",
+      "subchapter": "D",
+      "subchapter_name": "Drugs For Human Use"
+    },
+    "336": {
+      "title": "Antiemetic Drug Products For Over-The-Counter Human Use",
+      "subchapter": "D",
+      "subchapter_name": "Drugs For Human Use"
+    },
+    "338": {
+      "title": "Nighttime Sleep-Aid Drug Products For Over-The-Counter Human Use",
+      "subchapter": "D",
+      "subchapter_name": "Drugs For Human Use"
+    },
+    "340": {
+      "title": "Stimulant Drug Products For Over-The-Counter Human Use",
+      "subchapter": "D",
+      "subchapter_name": "Drugs For Human Use"
+    },
+    "341": {
+      "title": "Cold, Cough, Allergy, Bronchodilator, And Antiasthmatic Drug Products For Over-The-Counter Human Use",
+      "subchapter": "D",
+      "subchapter_name": "Drugs For Human Use"
+    },
+    "343": {
+      "title": "Internal Analgesic, Antipyretic, And Antirheumatic Drug Products For Over-The-Counter Human Use",
+      "subchapter": "D",
+      "subchapter_name": "Drugs For Human Use"
+    },
+    "344": {
+      "title": "Topical Otic Drug Products For Over-The-Counter Human Use",
+      "subchapter": "D",
+      "subchapter_name": "Drugs For Human Use"
+    },
+    "346": {
+      "title": "Anorectal Drug Products For Over-The-Counter Human Use",
+      "subchapter": "D",
+      "subchapter_name": "Drugs For Human Use"
+    },
+    "347": {
+      "title": "Skin Protectant Drug Products For Over-The-Counter Human Use",
+      "subchapter": "D",
+      "subchapter_name": "Drugs For Human Use"
+    },
+    "348": {
+      "title": "External Analgesic Drug Products For Over-The-Counter Human Use",
+      "subchapter": "D",
+      "subchapter_name": "Drugs For Human Use"
+    },
+    "349": {
+      "title": "Ophthalmic Drug Products For Over-The-Counter Human Use",
+      "subchapter": "D",
+      "subchapter_name": "Drugs For Human Use"
+    },
+    "350": {
+      "title": "Antiperspirant Drug Products For Over-The-Counter Human Use",
+      "subchapter": "D",
+      "subchapter_name": "Drugs For Human Use"
+    },
+    "352": {
+      "title": "Sunscreen Drug Products For Over-The-Counter Human Use [Stayed Indefinitely]",
+      "subchapter": "D",
+      "subchapter_name": "Drugs For Human Use"
+    },
+    "355": {
+      "title": "Anticaries Drug Products For Over-The-Counter Human Use",
+      "subchapter": "D",
+      "subchapter_name": "Drugs For Human Use"
+    },
+    "357": {
+      "title": "Miscellaneous Internal Drug Products For Over-The-Counter Human Use",
+      "subchapter": "D",
+      "subchapter_name": "Drugs For Human Use"
+    },
+    "358": {
+      "title": "Miscellaneous External Drug Products For Over-The-Counter Human Use",
+      "subchapter": "D",
+      "subchapter_name": "Drugs For Human Use"
+    },
+    "361": {
+      "title": "Prescription Drugs For Human Use Generally Recognized As Safe And Effective And Not Misbranded: Drugs Used In Research",
+      "subchapter": "D",
+      "subchapter_name": "Drugs For Human Use"
+    },
+    "369": {
+      "title": "Interpretative Statements Re Warnings On Drugs And Devices For Over-The-Counter Sale",
+      "subchapter": "D",
+      "subchapter_name": "Drugs For Human Use"
+    },
+    "500": {
+      "title": "General",
+      "subchapter": "E",
+      "subchapter_name": "Animal Drugs, Feeds, And Related Products"
+    },
+    "501": {
+      "title": "Animal Food Labeling",
+      "subchapter": "E",
+      "subchapter_name": "Animal Drugs, Feeds, And Related Products"
+    },
+    "502": {
+      "title": "Common Or Usual Names For Nonstandardized Animal Foods",
+      "subchapter": "E",
+      "subchapter_name": "Animal Drugs, Feeds, And Related Products"
+    },
+    "507": {
+      "title": "Current Good Manufacturing Practice, Hazard Analysis, And Risk-Based Preventive Controls For Food For Animals",
+      "subchapter": "E",
+      "subchapter_name": "Animal Drugs, Feeds, And Related Products"
+    },
+    "509": {
+      "title": "Unavoidable Contaminants In Animal Food And Food-Packaging Material",
+      "subchapter": "E",
+      "subchapter_name": "Animal Drugs, Feeds, And Related Products"
+    },
+    "510": {
+      "title": "New Animal Drugs",
+      "subchapter": "E",
+      "subchapter_name": "Animal Drugs, Feeds, And Related Products"
+    },
+    "511": {
+      "title": "New Animal Drugs For Investigational Use",
+      "subchapter": "E",
+      "subchapter_name": "Animal Drugs, Feeds, And Related Products"
+    },
+    "514": {
+      "title": "New Animal Drug Applications",
+      "subchapter": "E",
+      "subchapter_name": "Animal Drugs, Feeds, And Related Products"
+    },
+    "515": {
+      "title": "Medicated Feed Mill License",
+      "subchapter": "E",
+      "subchapter_name": "Animal Drugs, Feeds, And Related Products"
+    },
+    "516": {
+      "title": "New Animal Drugs For Minor Use And Minor Species",
+      "subchapter": "E",
+      "subchapter_name": "Animal Drugs, Feeds, And Related Products"
+    },
+    "520": {
+      "title": "Oral Dosage Form New Animal Drugs",
+      "subchapter": "E",
+      "subchapter_name": "Animal Drugs, Feeds, And Related Products"
+    },
+    "522": {
+      "title": "Implantation Or Injectable Dosage Form New Animal Drugs",
+      "subchapter": "E",
+      "subchapter_name": "Animal Drugs, Feeds, And Related Products"
+    },
+    "524": {
+      "title": "Ophthalmic And Topical Dosage Form New Animal Drugs",
+      "subchapter": "E",
+      "subchapter_name": "Animal Drugs, Feeds, And Related Products"
+    },
+    "526": {
+      "title": "Intramammary Dosage Form New Animal Drugs",
+      "subchapter": "E",
+      "subchapter_name": "Animal Drugs, Feeds, And Related Products"
+    },
+    "528": {
+      "title": "Intentional Genomic Alterations In Animals",
+      "subchapter": "E",
+      "subchapter_name": "Animal Drugs, Feeds, And Related Products"
+    },
+    "529": {
+      "title": "Certain Other Dosage Form New Animal Drugs",
+      "subchapter": "E",
+      "subchapter_name": "Animal Drugs, Feeds, And Related Products"
+    },
+    "530": {
+      "title": "Extralabel Drug Use In Animals",
+      "subchapter": "E",
+      "subchapter_name": "Animal Drugs, Feeds, And Related Products"
+    },
+    "556": {
+      "title": "Tolerances For Residues Of New Animal Drugs In Food",
+      "subchapter": "E",
+      "subchapter_name": "Animal Drugs, Feeds, And Related Products"
+    },
+    "558": {
+      "title": "New Animal Drugs For Use In Animal Feeds",
+      "subchapter": "E",
+      "subchapter_name": "Animal Drugs, Feeds, And Related Products"
+    },
+    "570": {
+      "title": "Food Additives",
+      "subchapter": "E",
+      "subchapter_name": "Animal Drugs, Feeds, And Related Products"
+    },
+    "571": {
+      "title": "Food Additive Petitions",
+      "subchapter": "E",
+      "subchapter_name": "Animal Drugs, Feeds, And Related Products"
+    },
+    "573": {
+      "title": "Food Additives Permitted In Feed And Drinking Water Of Animals",
+      "subchapter": "E",
+      "subchapter_name": "Animal Drugs, Feeds, And Related Products"
+    },
+    "579": {
+      "title": "Irradiation In The Production, Processing, And Handling Of Animal Feed And Pet Food",
+      "subchapter": "E",
+      "subchapter_name": "Animal Drugs, Feeds, And Related Products"
+    },
+    "582": {
+      "title": "Substances Generally Recognized As Safe",
+      "subchapter": "E",
+      "subchapter_name": "Animal Drugs, Feeds, And Related Products"
+    },
+    "584": {
+      "title": "Food Substances Affirmed As Generally Recognized As Safe In Feed And Drinking Water Of Animals",
+      "subchapter": "E",
+      "subchapter_name": "Animal Drugs, Feeds, And Related Products"
+    },
+    "589": {
+      "title": "Substances Prohibited From Use In Animal Food Or Feed",
+      "subchapter": "E",
+      "subchapter_name": "Animal Drugs, Feeds, And Related Products"
+    },
+    "600": {
+      "title": "Biological Products: General",
+      "subchapter": "F",
+      "subchapter_name": "Biologics"
+    },
+    "601": {
+      "title": "Licensing",
+      "subchapter": "F",
+      "subchapter_name": "Biologics"
+    },
+    "606": {
+      "title": "Current Good Manufacturing Practice For Blood And Blood Components",
+      "subchapter": "F",
+      "subchapter_name": "Biologics"
+    },
+    "607": {
+      "title": "Establishment Registration And Product Listing For Manufacturers Of Human Blood And Blood Products And Licensed Devices",
+      "subchapter": "F",
+      "subchapter_name": "Biologics"
+    },
+    "610": {
+      "title": "General Biological Products Standards",
+      "subchapter": "F",
+      "subchapter_name": "Biologics"
+    },
+    "630": {
+      "title": "Requirements For Blood And Blood Components Intended For Transfusion Or For Further Manufacturing Use",
+      "subchapter": "F",
+      "subchapter_name": "Biologics"
+    },
+    "640": {
+      "title": "Additional Standards For Human Blood And Blood Products",
+      "subchapter": "F",
+      "subchapter_name": "Biologics"
+    },
+    "660": {
+      "title": "Additional Standards For Diagnostic Substances For Laboratory Tests",
+      "subchapter": "F",
+      "subchapter_name": "Biologics"
+    },
+    "680": {
+      "title": "Additional Standards For Miscellaneous Products",
+      "subchapter": "F",
+      "subchapter_name": "Biologics"
+    },
+    "700": {
+      "title": "General",
+      "subchapter": "G",
+      "subchapter_name": "Cosmetics"
+    },
+    "701": {
+      "title": "Cosmetic Labeling",
+      "subchapter": "G",
+      "subchapter_name": "Cosmetics"
+    },
+    "710": {
+      "title": "Voluntary Registration Of Cosmetic Product Establishments",
+      "subchapter": "G",
+      "subchapter_name": "Cosmetics"
+    },
+    "720": {
+      "title": "Voluntary Filing Of Cosmetic Product Ingredient Composition Statements",
+      "subchapter": "G",
+      "subchapter_name": "Cosmetics"
+    },
+    "740": {
+      "title": "Cosmetic Product Warning Statements",
+      "subchapter": "G",
+      "subchapter_name": "Cosmetics"
+    },
+    "800": {
+      "title": "General",
+      "subchapter": "H",
+      "subchapter_name": "Medical Devices"
+    },
+    "801": {
+      "title": "Labeling",
+      "subchapter": "H",
+      "subchapter_name": "Medical Devices"
+    },
+    "803": {
+      "title": "Medical Device Reporting",
+      "subchapter": "H",
+      "subchapter_name": "Medical Devices"
+    },
+    "806": {
+      "title": "Medical Devices; Reports Of Corrections And Removals",
+      "subchapter": "H",
+      "subchapter_name": "Medical Devices"
+    },
+    "807": {
+      "title": "Establishment Registration And Device Listing For Manufacturers And Initial Importers Of Devices",
+      "subchapter": "H",
+      "subchapter_name": "Medical Devices"
+    },
+    "808": {
+      "title": "Exemptions From Federal Preemption Of State And Local Medical Device Requirements",
+      "subchapter": "H",
+      "subchapter_name": "Medical Devices"
+    },
+    "809": {
+      "title": "In Vitro Diagnostic Products For Human Use",
+      "subchapter": "H",
+      "subchapter_name": "Medical Devices"
+    },
+    "810": {
+      "title": "Medical Device Recall Authority",
+      "subchapter": "H",
+      "subchapter_name": "Medical Devices"
+    },
+    "812": {
+      "title": "Investigational Device Exemptions",
+      "subchapter": "H",
+      "subchapter_name": "Medical Devices"
+    },
+    "814": {
+      "title": "Premarket Approval Of Medical Devices",
+      "subchapter": "H",
+      "subchapter_name": "Medical Devices"
+    },
+    "820": {
+      "title": "Quality System Regulation (Eff. Until 2-2-26)",
+      "subchapter": "H",
+      "subchapter_name": "Medical Devices"
+    },
+    "821": {
+      "title": "Medical Device Tracking Requirements",
+      "subchapter": "H",
+      "subchapter_name": "Medical Devices"
+    },
+    "822": {
+      "title": "Postmarket Surveillance",
+      "subchapter": "H",
+      "subchapter_name": "Medical Devices"
+    },
+    "830": {
+      "title": "Unique Device Identification",
+      "subchapter": "H",
+      "subchapter_name": "Medical Devices"
+    },
+    "860": {
+      "title": "Medical Device Classification Procedures",
+      "subchapter": "H",
+      "subchapter_name": "Medical Devices"
+    },
+    "861": {
+      "title": "Procedures For Performance Standards Development",
+      "subchapter": "H",
+      "subchapter_name": "Medical Devices"
+    },
+    "862": {
+      "title": "Clinical Chemistry And Clinical Toxicology Devices",
+      "subchapter": "H",
+      "subchapter_name": "Medical Devices"
+    },
+    "864": {
+      "title": "Hematology And Pathology Devices",
+      "subchapter": "H",
+      "subchapter_name": "Medical Devices"
+    },
+    "866": {
+      "title": "Immunology And Microbiology Devices",
+      "subchapter": "H",
+      "subchapter_name": "Medical Devices"
+    },
+    "868": {
+      "title": "Anesthesiology Devices",
+      "subchapter": "H",
+      "subchapter_name": "Medical Devices"
+    },
+    "870": {
+      "title": "Cardiovascular Devices",
+      "subchapter": "H",
+      "subchapter_name": "Medical Devices"
+    },
+    "872": {
+      "title": "Dental Devices",
+      "subchapter": "H",
+      "subchapter_name": "Medical Devices"
+    },
+    "874": {
+      "title": "Ear, Nose, And Throat Devices",
+      "subchapter": "H",
+      "subchapter_name": "Medical Devices"
+    },
+    "876": {
+      "title": "Gastroenterology-Urology Devices",
+      "subchapter": "H",
+      "subchapter_name": "Medical Devices"
+    },
+    "878": {
+      "title": "General And Plastic Surgery Devices",
+      "subchapter": "H",
+      "subchapter_name": "Medical Devices"
+    },
+    "880": {
+      "title": "General Hospital And Personal Use Devices",
+      "subchapter": "H",
+      "subchapter_name": "Medical Devices"
+    },
+    "882": {
+      "title": "Neurological Devices",
+      "subchapter": "H",
+      "subchapter_name": "Medical Devices"
+    },
+    "884": {
+      "title": "Obstetrical And Gynecological Devices",
+      "subchapter": "H",
+      "subchapter_name": "Medical Devices"
+    },
+    "886": {
+      "title": "Ophthalmic Devices",
+      "subchapter": "H",
+      "subchapter_name": "Medical Devices"
+    },
+    "888": {
+      "title": "Orthopedic Devices",
+      "subchapter": "H",
+      "subchapter_name": "Medical Devices"
+    },
+    "890": {
+      "title": "Physical Medicine Devices",
+      "subchapter": "H",
+      "subchapter_name": "Medical Devices"
+    },
+    "892": {
+      "title": "Radiology Devices",
+      "subchapter": "H",
+      "subchapter_name": "Medical Devices"
+    },
+    "895": {
+      "title": "Banned Devices",
+      "subchapter": "H",
+      "subchapter_name": "Medical Devices"
+    },
+    "898": {
+      "title": "Performance Standard For Electrode Lead Wires And Patient Cables",
+      "subchapter": "H",
+      "subchapter_name": "Medical Devices"
+    },
+    "900": {
+      "title": "Mammography",
+      "subchapter": "I",
+      "subchapter_name": "Mammography Quality Standards Act"
+    },
+    "1000": {
+      "title": "General",
+      "subchapter": "J",
+      "subchapter_name": "Radiological Health"
+    },
+    "1002": {
+      "title": "Records And Reports",
+      "subchapter": "J",
+      "subchapter_name": "Radiological Health"
+    },
+    "1003": {
+      "title": "Notification Of Defects Or Failure To Comply",
+      "subchapter": "J",
+      "subchapter_name": "Radiological Health"
+    },
+    "1004": {
+      "title": "Repurchase, Repairs, Or Replacement Of Electronic Products",
+      "subchapter": "J",
+      "subchapter_name": "Radiological Health"
+    },
+    "1005": {
+      "title": "Importation Of Electronic Products",
+      "subchapter": "J",
+      "subchapter_name": "Radiological Health"
+    },
+    "1010": {
+      "title": "Performance Standards For Electronic Products: General",
+      "subchapter": "J",
+      "subchapter_name": "Radiological Health"
+    },
+    "1020": {
+      "title": "Performance Standards For Ionizing Radiation Emitting Products",
+      "subchapter": "J",
+      "subchapter_name": "Radiological Health"
+    },
+    "1030": {
+      "title": "Performance Standards For Microwave And Radio Frequency Emitting Products",
+      "subchapter": "J",
+      "subchapter_name": "Radiological Health"
+    },
+    "1040": {
+      "title": "Performance Standards For Light-Emitting Products",
+      "subchapter": "J",
+      "subchapter_name": "Radiological Health"
+    },
+    "1100": {
+      "title": "General",
+      "subchapter": "K",
+      "subchapter_name": "Tobacco Products"
+    },
+    "1105": {
+      "title": "General",
+      "subchapter": "K",
+      "subchapter_name": "Tobacco Products"
+    },
+    "1107": {
+      "title": "Exemption Requests And Substantial Equivalence Reports",
+      "subchapter": "K",
+      "subchapter_name": "Tobacco Products"
+    },
+    "1114": {
+      "title": "Premarket Tobacco Product Applications",
+      "subchapter": "K",
+      "subchapter_name": "Tobacco Products"
+    },
+    "1140": {
+      "title": "Cigarettes, Smokeless Tobacco, And Covered Tobacco Products",
+      "subchapter": "K",
+      "subchapter_name": "Tobacco Products"
+    },
+    "1141": {
+      "title": "Required Warnings For Cigarette Packages And Advertisements",
+      "subchapter": "K",
+      "subchapter_name": "Tobacco Products"
+    },
+    "1143": {
+      "title": "Minimum Required Warning Statements",
+      "subchapter": "K",
+      "subchapter_name": "Tobacco Products"
+    },
+    "1150": {
+      "title": "User Fees",
+      "subchapter": "K",
+      "subchapter_name": "Tobacco Products"
+    },
+    "1210": {
+      "title": "Regulations Under The Federal Import Milk Act",
+      "subchapter": "L",
+      "subchapter_name": "Regulations Under Certain Other Acts Administered By The Food And Drug Administration"
+    },
+    "1230": {
+      "title": "Regulations Under The Federal Caustic Poison Act",
+      "subchapter": "L",
+      "subchapter_name": "Regulations Under Certain Other Acts Administered By The Food And Drug Administration"
+    },
+    "1240": {
+      "title": "Control Of Communicable Diseases",
+      "subchapter": "L",
+      "subchapter_name": "Regulations Under Certain Other Acts Administered By The Food And Drug Administration"
+    },
+    "1250": {
+      "title": "Interstate Conveyance Sanitation",
+      "subchapter": "L",
+      "subchapter_name": "Regulations Under Certain Other Acts Administered By The Food And Drug Administration"
+    },
+    "1271": {
+      "title": "Human Cells, Tissues, And Cellular And Tissue-Based Products",
+      "subchapter": "L",
+      "subchapter_name": "Regulations Under Certain Other Acts Administered By The Food And Drug Administration"
+    },
+    "1300": {
+      "title": "Definitions",
+      "subchapter": "",
+      "subchapter_name": ""
+    },
+    "1302": {
+      "title": "Labeling And Packaging Requirements For Controlled Substances",
+      "subchapter": "",
+      "subchapter_name": ""
+    },
+    "1305": {
+      "title": "Orders For Schedule I And Ii Controlled Substances",
+      "subchapter": "",
+      "subchapter_name": ""
+    },
+    "1310": {
+      "title": "Records And Reports Of Listed Chemicals And Certain Machines; Importation And Exportation Of Certain Machines",
+      "subchapter": "",
+      "subchapter_name": ""
+    },
+    "1311": {
+      "title": "Requirements For Electronic Orders And Prescriptions",
+      "subchapter": "",
+      "subchapter_name": ""
+    },
+    "1312": {
+      "title": "Importation And Exportation Of Controlled Substances",
+      "subchapter": "",
+      "subchapter_name": ""
+    },
+    "1313": {
+      "title": "Importation And Exportation Of List I And List Ii Chemicals",
+      "subchapter": "",
+      "subchapter_name": ""
+    },
+    "1314": {
+      "title": "Retail Sale Of Scheduled Listed Chemical Products",
+      "subchapter": "",
+      "subchapter_name": ""
+    },
+    "1315": {
+      "title": "Importation And Production Quotas For Ephedrine, Pseudoephedrine, And Phenylpropanolamine",
+      "subchapter": "",
+      "subchapter_name": ""
+    },
+    "1316": {
+      "title": "Administrative Functions, Practices, And Procedures",
+      "subchapter": "",
+      "subchapter_name": ""
+    },
+    "1317": {
+      "title": "Disposal",
+      "subchapter": "",
+      "subchapter_name": ""
+    },
+    "1318": {
+      "title": "Controls To Satisfy The Requirements Of The Act Applicable To The Manufacturing Of Marihuana",
+      "subchapter": "",
+      "subchapter_name": ""
+    },
+    "1321": {
+      "title": "Dea Mailing Addresses",
+      "subchapter": "",
+      "subchapter_name": ""
+    },
+    "1401": {
+      "title": "Public Availability Of Information",
+      "subchapter": "",
+      "subchapter_name": ""
+    },
+    "1402": {
+      "title": "Mandatory Declassification Review",
+      "subchapter": "",
+      "subchapter_name": ""
+    }
+  }
+}

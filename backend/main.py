@@ -84,22 +84,9 @@ _last_result: Optional[dict] = None
 # Retriever singleton (lazy-initialised on first search)
 # ─────────────────────────────────────────────────────────────────────────────
 
-_retriever = None
-
-
 def _get_retriever():
-    global _retriever
-    if _retriever is None:
-        from retrieval.retriever import CFRRetriever, RetrieverConfig
-        s = get_settings()
-        _retriever = CFRRetriever(
-            RetrieverConfig(
-                qdrant_url=s.qdrant_url,
-                qdrant_api_key=s.qdrant_api_key,
-                collection_name=s.qdrant_collection,
-            )
-        )
-    return _retriever
+    from agents.retrieval_pipeline import _get_retriever as _pipeline_get_retriever
+    return _pipeline_get_retriever()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -368,10 +355,13 @@ def query_compliance(request: QueryRequest):
     → consistency detection → final synthesis.
     """
     from agents.graph import query_graph
+    from agents.session_logger import create_session, close_session
 
+    session_id = create_session(request.question)
     try:
-        result = query_graph.invoke({"query": request.question, "sub_answers": []})
+        result = query_graph.invoke({"query": request.question, "sub_answers": [], "session_id": session_id})
     except Exception as exc:
+        close_session(session_id)
         logger.exception("Query pipeline failed: %s", exc)
         raise HTTPException(status_code=500, detail=f"Query pipeline error: {exc}")
 
@@ -405,6 +395,9 @@ async def query_compliance_stream(request: QueryRequest):
       insufficient_coverage → answer
     """
     from agents.graph import query_graph
+    from agents.session_logger import create_session, close_session
+
+    _session_id = create_session(request.question)
 
     async def generate():
         loop = asyncio.get_event_loop()
@@ -413,11 +406,12 @@ async def query_compliance_stream(request: QueryRequest):
         def _run():
             try:
                 for chunk in query_graph.stream(
-                    {"query": request.question, "sub_answers": []},
+                    {"query": request.question, "sub_answers": [], "session_id": _session_id},
                     stream_mode="updates",
                 ):
                     loop.call_soon_threadsafe(queue.put_nowait, chunk)
             except Exception as exc:
+                close_session(_session_id)
                 loop.call_soon_threadsafe(queue.put_nowait, {"__error__": str(exc)})
             finally:
                 loop.call_soon_threadsafe(queue.put_nowait, None)

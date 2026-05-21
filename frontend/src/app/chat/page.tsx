@@ -21,6 +21,26 @@ const SUGGESTIONS = [
 // Maps each SSE agent event to a human-readable progress label.
 function stageLabelFor(event: SSEEvent): string {
   switch (event.event) {
+    // v2 node names
+    case "query_analyzer":
+      return event.needs_clarification ? "Requesting clarification…" : "Analyzing question…";
+    case "decomposer":
+      return event.sub_question_count !== undefined
+        ? `Breaking into ${event.sub_question_count} sub-question${event.sub_question_count !== 1 ? "s" : ""}…`
+        : "Decomposing question…";
+    case "process_sub_question":
+      return event.sub_question_text
+        ? `Researching: ${event.sub_question_text.slice(0, 60)}…`
+        : "Searching CFR database…";
+    case "consistency_detector":
+      return event.conflict_count
+        ? `Checking ${event.conflict_count} potential conflict${event.conflict_count !== 1 ? "s" : ""}…`
+        : "Checking for conflicts…";
+    case "final_synthesizer":
+      return "Synthesizing answer…";
+    case "clarification_response":
+      return "Generating clarification…";
+    // legacy node names
     case "planner":
       return "Planning query…";
     case "retriever":

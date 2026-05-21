@@ -51,11 +51,18 @@ TARGET_CANDIDATE_POOL = 80      # Pool size after RRF merge, before reranking
 RERANKER_TOP_K = 12             # Final chunks passed downstream after reranking
 CRAG_MAX_RETRIES = 3            # Max reformulation attempts on INCORRECT verdict
 CROSS_REF_MAX_DEPTH = 2         # Max recursive hops in cross-reference resolution
-CRAG_THRESHOLD_HIGH = 0.70      # Min reranker score for CORRECT verdict
+CRAG_THRESHOLD_HIGH = 0.70      # Min reranker score for standard CORRECT verdict
+CRAG_THRESHOLD_VERY_HIGH = 0.85 # Min top score for single-chunk CORRECT verdict
+CRAG_AMBIGUOUS_SOFT_CORRECT = 0.70  # If AMBIGUOUS and top >= this, skip supplemental search
+CRAG_BEST_CHUNK_MIN_SCORE = 0.30    # Min top score to update best_chunks_seen carry-forward
 CRAG_THRESHOLD_LOW = 0.45       # Min reranker score for AMBIGUOUS verdict
+REFORMULATE_MIN_LEN = 15        # Min char length for a valid reformulation string
+VARIANT_MIN_LEN = 15            # Min char length for a valid query variant
 HYDE_GENERATION_TEMP = 0.7      # LLM temperature for HyDE passage generation
 STEPBACK_GENERATION_TEMP = 0.3  # LLM temperature for step-back query generation
 PART_CLASSIFIER_CONFIDENCE_MIN = 0.60  # Below this, skip Flow A and use Flow B only
+CONSISTENCY_CONF_THRESHOLD = 0.3  # Sub-answers below this skip contradiction detection
+SYNTHESIZER_WEAK_THRESHOLD = 0.3  # Below this, sub-answer excluded from confidence avg
 ```
 
 ---
@@ -151,8 +158,15 @@ interface SubAnswer {
   cross_refs_resolved: string[]
   claim_verification: ClaimVerification[]
   unverified_claims: string[]
+  citations: string[]
   caveats: string[]
-  flags: string[]                    // e.g. ["LOW_CONFIDENCE", "AMBIGUOUS_EVIDENCE"]
+  flags: string[]                    // e.g. ["LOW_CONFIDENCE", "AMBIGUOUS_EVIDENCE",
+                                     //       "SKIPPED_NO_EVIDENCE",
+                                     //       "LOW_CONF_EXCLUDED_FROM_CONFLICT_CHECK",
+                                     //       "RETRIEVAL_DOMAIN_MISMATCH"]
+  reformulation_log: string[]
+  skipped: boolean                   // True when LOW_CONFIDENCE + best_chunks_seen empty;
+                                     // excluded from synthesis and confidence averaging
 }
 
 interface ConflictReport {
@@ -164,9 +178,17 @@ interface ConflictReport {
   winning_section: string | null
 }
 
+interface DomainMismatchReport {
+  sub_question_ids: string[]         // Two sub-answers with incompatible retrieved domains
+  domain_a: string                   // e.g. "food"
+  domain_b: string                   // e.g. "drug"
+  description: string
+}
+
 interface FinalAnswer {
   ruling: "YES" | "NO" | "CONDITIONAL"
   ruling_summary: string
+  reasoning_steps: string[]          // Numeric derivation steps; [] for qualitative rulings
   requirements: {
     item: string
     citation: string                 // e.g. "[§101.54]"
@@ -178,16 +200,22 @@ interface FinalAnswer {
     text: string
   }[]
   unresolved_conflicts: ConflictReport[]
+  domain_mismatches: DomainMismatchReport[]  // Retrieval-domain failures; separate from
+                                             // regulatory conflicts
   low_confidence_sub_questions: string[]
   caveats: string[]
   compliance_checklist: string[]
   all_citations: string[]            // Deduplicated list of all §refs used
+  partial_information_note: string | null  // Informational flag when sub-questions were
+                                           // skipped or had weak retrieval; not a penalty
 }
 ```
 
 ---
 
 ## Confidence Scoring Rules
+
+### Per-Sub-Answer Confidence
 
 Applied in Sub-Answer Synthesis Agent. Used to populate `SubAnswer.confidence`.
 
@@ -199,10 +227,31 @@ Applied in Sub-Answer Synthesis Agent. Used to populate `SubAnswer.confidence`.
 | AMBIGUOUS | > 0 | 0.4 |
 | LOW_CONFIDENCE | any | 0.2 |
 
-Final answer `confidence_level` is derived from the average of all `SubAnswer.confidence` values:
+Sub-questions where `verdict = LOW_CONFIDENCE` AND `best_chunks_seen` is empty are
+**not synthesized** — they return `SubAnswer(skipped=true, confidence=0.0)` and are
+excluded from the final synthesizer's confidence average entirely.
+
+### Final `confidence_level` (Weighted Scoring)
+
+Computed by the Final Synthesis Agent from non-skipped sub-answers only:
+
+```python
+strong = [sa for sa in resolved_answers if sa.confidence >= SYNTHESIZER_WEAK_THRESHOLD]  # 0.3
+weak   = [sa for sa in resolved_answers if sa.confidence <  SYNTHESIZER_WEAK_THRESHOLD]
+pool   = strong if strong else resolved_answers   # fallback if all are weak
+avg    = mean(sa.confidence for sa in pool)
+```
+
+Thresholds applied to `avg`:
 - `>= 0.8` → HIGH
 - `>= 0.5` → MEDIUM
 - `< 0.5` → LOW
+
+Rationale: a single strong sub-answer (e.g. `confidence=0.6`) is not dragged down to
+LOW by weak sub-answers (`confidence=0.2`) that had poor retrieval. The
+`confidence_explanation` reports the count of strong sub-answers used and notes when
+weak ones were excluded from scoring. Skipped and weak sub-answers are surfaced via
+`partial_information_note` without penalising the confidence level.
 
 ---
 
@@ -240,10 +289,17 @@ UserQuery
   │                  │  Top-K chunks (12)                     │
   │                  ▼                                        │
   │         [CRAG Evaluator]                                  │
-  │          ├─ CORRECT ──────────────────────────┐          │
-  │          ├─ AMBIGUOUS → supplemental search ──┤          │
-  │          └─ INCORRECT → reformulate & retry ──┘          │
+  │          ├─ CORRECT (2-path: very-high OR standard) ─────┤
+  │          ├─ AMBIGUOUS → top>=0.70 break; else suppl. ────┤
+  │          └─ INCORRECT → reformulate & retry              │
+  │                          retry 2: section-anchor first    │
+  │                          best_chunks_seen carry-forward   │
   │                  │  CRAGResult                            │
+  │                  ▼                                        │
+  │         [Skip-No-Evidence Gate]                           │
+  │          ├─ LOW_CONFIDENCE + best_chunks_seen empty       │
+  │          │   → SubAnswer(skipped=true), bypass synthesis  │
+  │          └─ otherwise → continue                          │
   │                  ▼                                        │
   │         [Cross-Reference Resolution Agent]                │
   │                  │  ResolvedChunk[]                       │
@@ -255,12 +311,15 @@ UserQuery
   │                  │  SubAnswer                             │
   └─────────────────────────────────────────────────────────┘
   │
-  ▼ (collect all SubAnswer objects)
+  ▼ (collect all SubAnswer objects, including skipped=true)
 [Stage 6] Consistency & Conflict Detection Agent
-  │  Output: {resolved_answers: SubAnswer[], conflicts: ConflictReport[]}
+  │  active/skipped split → conf threshold filter → domain pre-check
+  │  Output: {resolved_answers, unresolved_conflicts, domain_mismatches}
   │
   ▼
 [Stage 7] Final Synthesis Agent
+  │  filter skipped → primary sub-answer → weighted conf
+  │  → reasoning_steps → partial_information_note
   │  Output: FinalAnswer
   │
   ▼
@@ -302,6 +361,13 @@ output: AnalyzedQuery
 - If `needs_clarification = true`: return `clarification_question` to the user, halt pipeline. Resume when user responds with clarifying input.
 - If `needs_clarification = false`: pass `AnalyzedQuery` to Stage 2.
 
+`needs_clarification` and `clarification_question` are **also hoisted** to top-level
+`ComplianceState` keys so the conditional edge in `graph.py` can route without
+unpacking the `analyzed_query` dict. `dispatch_sub_questions` forwards the full
+`AnalyzedQuery` to every parallel branch so each sub-question pipeline has access to
+`intent_type`, `entities` (including `fda_domain` and `explicit_refs`), and
+`is_multi_part`.
+
 ### Error Handling
 - LLM parse failure → retry once with explicit JSON schema in prompt
 - Second failure → return generic clarification request to user, halt pipeline
@@ -320,20 +386,37 @@ input: AnalyzedQuery
 
 ### Process
 
-**Step 1 — Decomposition**
-1. Send `AnalyzedQuery` to LLM
-2. LLM produces the minimum number of atomic sub-questions needed to fully answer the original query
-3. Each sub-question must have a single, non-overlapping intent
-4. Each sub-question must be self-contained (independently answerable without the others)
-5. Assign a unique `id` (uuid) to each sub-question
+**Step 1 — Decomposition (single LLM call)**
 
-**Step 2 — Query Variant Generation (per sub-question)**
+Sub-questions are produced by a **single** LLM call (not parallel). The decomposition
+prompt enforces these hard rules passed as system instructions:
 
-For each sub-question, run three separate LLM calls in parallel:
+1. Sub-question text MUST be a **declarative retrieval topic**, not a yes/no question.
+   - Bad: "Does 20g protein per serving qualify as an 'excellent source' claim?"
+   - Good: "FDA criteria for 'excellent source' nutrient content claims for protein"
+   Yes/no phrasings pull unrelated regulatory text because semantic search finds
+   "criteria" and "claim" in drug/device docs instead of the correct food-labeling Part.
+2. Two sub-questions that would retrieve the same CFR sections must be merged.
+3. Each sub-question must have a single, non-overlapping intent.
+4. Each sub-question must be self-contained (independently answerable without others).
+5. `is_multi_part = false` → produce **exactly 1** sub-question (hard constraint).
+   `is_multi_part = true`  → produce the minimum needed, maximum 4.
+6. Assign a unique `id` (uuid) to each sub-question.
+
+The LLM `user_content` for decomposition MUST include all of: `intent_type`,
+`product_type`, `claim_type`, `fda_domain`, `explicit_refs`, and `is_multi_part` from
+`AnalyzedQuery`. Omitting `fda_domain` or `is_multi_part` removes the signals the LLM
+needs to pick domain-anchored topics and to gate single vs. multi sub-question output.
+
+**Step 2 — Query Variant Generation (per sub-question, parallel)**
+
+For each sub-question, run three separate LLM calls in a `ThreadPoolExecutor` (variant
+generation is the **only** parallel step in this stage). Each sub-question's three
+variants are independent of other sub-questions' variants.
 
 **Variant 1 — Primary query**
 - Input: sub-question text as-is
-- Output: `variants.primary` — the sub-question rephrased for optimal retrieval (concise, keyword-rich, removes conversational phrasing)
+- Output: `variants.primary` — rephrased for optimal retrieval (concise, keyword-rich)
 
 **Variant 2 — HyDE passage**
 - Input: sub-question text
@@ -347,6 +430,17 @@ For each sub-question, run three separate LLM calls in parallel:
 - Temperature: `STEPBACK_GENERATION_TEMP` (0.3)
 - Output: `variants.stepback` — abstract principle-level query
 
+**Step 3 — Variant Validation (`_validate_variant`)**
+
+After each `future.result()` call, validate before attaching to `SubQuestion.variants`:
+- Empty or `None` → invalid
+- `len(stripped) < VARIANT_MIN_LEN` (15) → invalid
+- Else → accept
+
+On invalid: log WARNING and fall back to the sub-question text as the safe default.
+A successful API call returning `""` must never reach the retrieval pipeline — vacuous
+queries pull wrong-domain chunks and waste CRAG retries on noise.
+
 ### Output
 ```typescript
 output: SubQuestion[]
@@ -355,8 +449,10 @@ Each `SubQuestion` contains `id`, `text`, `variants` (primary, hyde_passage, ste
 
 ### Error Handling
 - If decomposition LLM call fails → retry once
-- If variant generation fails for one variant → use `primary` for all three, log warning
-- If the original query is already atomic (single intent, `is_multi_part = false`) → produce a single `SubQuestion` with `text = AnalyzedQuery.raw_text`
+- If variant generation fails (exception or validator rejects) → fall back to
+  sub-question text for that variant, log warning
+- If the original query is already atomic (`is_multi_part = false`) → produce a single
+  `SubQuestion` with `text = AnalyzedQuery.raw_text`
 
 ---
 
@@ -408,13 +504,54 @@ input: {
 
 ### Process
 
-**Step 1 — CFR Part Classification**
-1. Send `sub_question_text` (and any `explicit_refs` from `AnalyzedQuery`) to the Part classifier
-2. Part classifier returns predicted `cfr_part[]` values and a confidence score
-3. If classifier confidence < `PART_CLASSIFIER_CONFIDENCE_MIN` (0.60):
+**Step 1 — CFR Part Classification (grounded LLM classifier)**
+
+Unanchored LLM knowledge of "which 21 CFR Part covers which topic" is unreliable.
+The classifier is grounded in a knowledge base built at ingestion time.
+
+**Knowledge base (`backend/data/cfr_part_index.json`):**
+- Generated by `backend/ingestion/part_index.py` from `cfr_chunks.json` — always in
+  sync with the indexed corpus (no manual maintenance)
+- ~256 active CFR Parts (~3.2 K tokens), each entry:
+  `{ "title": "...", "subchapter": "<A-L>", "subchapter_name": "..." }`
+- Loaded once at startup (lazy, cached, thread-safe)
+- Regenerated automatically as Step 3 of `run_pipeline()` on every ingestion run
+
+**Domain pre-filter (pure Python, no LLM call):**
+
+Uses `AnalyzedQuery.entities.fda_domain` to narrow the part list sent to the LLM:
+
+| fda_domain | Subchapter(s) |
+|---|---|
+| `food` | B |
+| `drug` | C, D |
+| `animal` | E |
+| `biological` | F |
+| `cosmetic` | G |
+| `device` | H, I, J |
+| `tobacco` | K |
+| `administrative` | A, L |
+| `null` / unknown | (no filter — all 256 parts) |
+
+**Classifier call:**
+1. Build LLM `user_content` from `sub_question_text` and the filtered part list in
+   compact `"Part 101: Food Labeling\nPart 102: ..."` format
+2. If `explicit_refs` are non-empty, append as **hint only** (not a hard override):
+   `"Hint — original query mentioned these CFR sections: [...]"`
+   The system prompt instructs the LLM to classify independently if the sub-question
+   covers a different regulatory topic than the hinted sections. (Prior implementation
+   hard-overrode the classifier to `confidence=1.0` on any non-empty `explicit_refs`,
+   which forced every sub-question into the originally-cited Part even when the
+   sub-question covered an unrelated regulatory area.)
+3. Classifier returns predicted `cfr_part[]` and a confidence score in `[0, 1]`
+4. If classifier confidence < `PART_CLASSIFIER_CONFIDENCE_MIN` (0.60):
    - Skip Flow A entirely
    - Log: `"Flow A skipped: classifier confidence below threshold"`
    - Return empty result set; Flow B covers full retrieval
+
+**Fallback:** if `cfr_part_index.json` is absent (e.g. first run before ingestion),
+the classifier silently omits part-list context and falls back to unconstrained LLM
+classification.
 
 **Step 2 — Qdrant Metadata Filter**
 1. Build Qdrant filter: `cfr_part IN [predicted_parts]`
@@ -581,7 +718,8 @@ input: {
   top_k_chunks: RankedChunk[],
   sub_question: SubQuestion,
   retry_count: number,                   // starts at 0
-  reformulation_log: string[]            // starts as []
+  reformulation_log: string[],           // starts as []
+  best_chunks_seen: RankedChunk[]        // carry-forward across retries; starts as []
 }
 ```
 
@@ -589,21 +727,50 @@ input: {
 
 **Step 1 — Verdict Determination**
 
-Evaluate the `reranker_score` values of `top_k_chunks`:
+Let `top_score = top_k_chunks[0].reranker_score` and
+`above_low = count(c for c in top_k_chunks if c.reranker_score >= CRAG_THRESHOLD_LOW)`.
 
 | Condition | Verdict |
 |---|---|
-| Top chunk score `>= CRAG_THRESHOLD_HIGH` AND at least 2 chunks `>= CRAG_THRESHOLD_LOW` | CORRECT |
-| Top chunk score `>= CRAG_THRESHOLD_LOW` but does not meet CORRECT criteria | AMBIGUOUS |
+| `top_score >= CRAG_THRESHOLD_VERY_HIGH` (0.85) AND `above_low >= 1` | CORRECT |
+| `top_score >= CRAG_THRESHOLD_HIGH` (0.70) AND `above_low >= 2` | CORRECT |
+| `top_score >= CRAG_THRESHOLD_LOW` but neither CORRECT condition met | AMBIGUOUS |
 | All chunk scores `< CRAG_THRESHOLD_LOW` | INCORRECT |
 | `retry_count >= CRAG_MAX_RETRIES` and still INCORRECT | LOW_CONFIDENCE |
+
+The two CORRECT paths replace the single prior condition. A single very strongly
+relevant chunk (`top_score >= 0.85`) is sufficient evidence on its own; requiring a
+second chunk above 0.45 incorrectly downgraded those results to AMBIGUOUS.
+
+**Step 1b — Best-Chunks Carry-Forward**
+
+After every rerank pass (initial and each retry), before routing:
+
+```python
+if top_k_chunks and top_score > CRAG_BEST_CHUNK_MIN_SCORE:  # 0.30
+    if not best_chunks_seen or top_score > best_chunks_seen[0].reranker_score:
+        best_chunks_seen = top_k_chunks
+```
+
+This preserves the highest-scoring chunk set seen across all retries. Later retries on
+a failing query tend to retrieve similar irrelevant content, so without this the
+LOW_CONFIDENCE path would return the *worst* iteration.
 
 **Step 2 — CORRECT path**
 - Set `verdict = "CORRECT"`, `caveat_flag = false`
 - Pass `top_k_chunks` to Cross-Reference Resolution Agent unchanged
 
 **Step 3 — AMBIGUOUS path**
-1. Run a supplemental broad search: Flow B with `variants.primary` only, no Part filter, `limit = FLOW_B_TOP_N`
+
+If `top_score >= CRAG_AMBIGUOUS_SOFT_CORRECT` (0.70):
+- The top chunk already meets the HIGH threshold; adding supplemental chunks risks
+  diluting a good result with noise
+- Skip supplemental search, break the retry loop immediately
+- Set `verdict = "AMBIGUOUS"`, `caveat_flag = true`
+- Pass `top_k_chunks` unchanged to Cross-Reference Resolution Agent
+
+Otherwise (genuinely ambiguous, `top_score < 0.70`):
+1. Run supplemental broad search: Flow B with `variants.primary` only, no Part filter, `limit = FLOW_B_TOP_N`
 2. Merge supplemental results with existing `top_k_chunks` using RRF
 3. Re-run cross-encoder reranker on merged pool
 4. Set `verdict = "AMBIGUOUS"`, `caveat_flag = true`
@@ -617,27 +784,58 @@ Select reformulation strategy based on `retry_count`:
 |---|---|
 | 0 | Synonym expansion: prompt LLM to rewrite `variants.primary` with expanded regulatory synonyms |
 | 1 | Full rephrase: prompt LLM to rewrite the sub-question from a different angle |
-| 2 | Variant switch: use `variants.hyde_passage` as query if not yet tried; else use `variants.stepback` |
+| 2 | Section-anchor (see Step 4a below) |
 
-After reformulation:
-1. Log the reformulation attempt to `reformulation_log`
+**Step 4a — Section-Anchor Reformulation (retry_count == 2)**
+
+Priority order for the reformulation string:
+
+1. **Section anchor** (preferred when `best_chunks_seen` is non-empty):
+   - Helper `_extract_best_section(best_chunks_seen)` checks top 3 chunks; tries
+     `chunk.hierarchy.section.number` first, then regex on `chunk.cfr_citation`
+   - Build query: `f"{sub_q_text} 21 CFR §{section}"`
+   - Example: `"FDA protein labeling requirements 21 CFR §101.9"`
+   - The section number is grounded in actually-retrieved content (not LLM-invented).
+     BGE-M3 sparse weights strongly match any indexed chunk that mentions that section,
+     narrowing retrieval to the correct regulatory neighbourhood without an LLM call.
+2. **HyDE passage** — only if non-empty and `len >= REFORMULATE_MIN_LEN` (15)
+3. **Stepback query** — only if non-empty and `len >= REFORMULATE_MIN_LEN` (15)
+4. **`sub_q_text` unchanged** — last resort
+
+**Step 4b — Reformulation Validation**
+
+Before using the reformulated query:
+- Empty or `None` → invalid
+- `len(stripped) < REFORMULATE_MIN_LEN` (15) → invalid
+- `stripped == current_primary.strip()` → invalid (no change)
+
+On invalid: log WARNING with the rejected string, keep `current_primary` unchanged.
+The rejected string is still appended to `reformulation_log` for session analysis.
+
+After a valid reformulation:
+1. Log to `reformulation_log`
 2. Increment `retry_count`
 3. Re-run Flow A and Flow B with the new query text
 4. Re-run RRF Merge
-5. Re-run Cross-Encoder Reranker
-6. Re-enter CRAG Evaluator with `retry_count` incremented
+5. Re-run Cross-Encoder Reranker (then update `best_chunks_seen` per Step 1b)
+6. Re-enter CRAG Evaluator with incremented `retry_count`
+
+**Step 5 — LOW_CONFIDENCE (retries exhausted)**
 
 If `retry_count >= CRAG_MAX_RETRIES`:
 - Set `verdict = "LOW_CONFIDENCE"`, `caveat_flag = true`
-- Use whatever chunks are available (even low-scoring)
-- Attach flag `"MAX_RETRIES_EXCEEDED"` to the result
-- Continue pipeline — do not block
+- If `best_chunks_seen` is non-empty AND `best_chunks_seen[0].reranker_score > current top_score`:
+  restore `best_chunks_seen` as final chunk pool
+- Attach flag `"MAX_RETRIES_EXCEEDED"`
+- Continue pipeline — the Skip-No-Evidence Gate (see Sub-Answer Synthesis) decides
+  whether to synthesize or skip based on whether `best_chunks_seen` is empty
 
 ### Output
 ```typescript
 output: CRAGResult {
   verdict: "CORRECT" | "AMBIGUOUS" | "INCORRECT" | "LOW_CONFIDENCE"
   chunks: RankedChunk[]
+  best_chunks_seen: RankedChunk[]    // best chunk pool seen across all retries
   caveat_flag: boolean
   retry_count: number
   reformulation_log: string[]
@@ -792,17 +990,55 @@ input: {
 ```
 
 ### Process
+
+**Step 0 — Skip-No-Evidence Early Return (gate before synthesis)**
+
+Immediately after the CRAG loop, before any synthesis work:
+
+```python
+if crag_result.verdict == "LOW_CONFIDENCE" and not crag_result.best_chunks_seen:
+    return SubAnswer(
+        sub_question_id=...,
+        sub_question_text=...,
+        answer="",
+        confidence=0.0,
+        crag_verdict="LOW_CONFIDENCE",
+        caveat_flag=True,
+        chunks_used=[],
+        cross_refs_resolved=[],
+        claim_verification=[],
+        unverified_claims=[],
+        citations=[],
+        caveats=["LOW_CONFIDENCE_RETRIEVAL"],
+        flags=["MAX_RETRIES_EXCEEDED", "SKIPPED_NO_EVIDENCE"],
+        reformulation_log=crag_result.reformulation_log,
+        skipped=True,
+    )
+```
+
+`best_chunks_seen` empty after `MAX_RETRIES` means the retrieval pipeline genuinely
+found no supporting regulatory text. Synthesizing from nothing produces a fabricated
+answer with `confidence=0.2` that:
+- Drags down the final-answer confidence average
+- Triggers spurious contradiction checks in Stage 6 against claims with no evidence
+
+`skipped=true` is the sentinel used by Stage 6 and Stage 7 to exclude these sub-answers
+from conflict detection and confidence averaging while still passing them through for
+count reporting.
+
+**Step 1 — Standard synthesis** (runs only when `skipped` is false)
 1. Use `claim_verification_result.verified_answer` as the base answer text
-2. Inline §citations: for each sentence in the answer, append the `cfr_section` of its `supporting_chunk_id` in format `[§X.XX]`
+2. Inline §citations: for each sentence, append `cfr_section` of `supporting_chunk_id` as `[§X.XX]`
 3. Compute `confidence` score using the Confidence Scoring table above
-4. Build `chunks_used` list from all `ResolvedChunk` objects whose `chunk_id` appears in at least one `ClaimVerification.supporting_chunk_id`
-5. Build `cross_refs_resolved` list from all `ResolvedChunk` where `is_cross_ref = true`
+4. Build `chunks_used` from all `ResolvedChunk` objects referenced by `ClaimVerification.supporting_chunk_id`
+5. Build `cross_refs_resolved` from all `ResolvedChunk` where `is_cross_ref = true`
 6. Set `caveat_flag` from `crag_result.caveat_flag`
 7. Populate `caveats` array:
    - Add `"AMBIGUOUS_EVIDENCE"` if `caveat_flag = true`
    - Add `"LOW_CONFIDENCE_RETRIEVAL"` if `crag_result.verdict = "LOW_CONFIDENCE"`
    - Add `"UNVERIFIED_CLAIMS_REMOVED"` if `unverified_claims` is non-empty
 8. Populate `flags` array from all flag conditions encountered in this sub-question's processing
+9. Set `skipped = false`
 
 ### Output
 ```typescript
@@ -814,59 +1050,128 @@ output: SubAnswer
 ## Stage 6 — Consistency & Conflict Detection Agent
 
 ### Objective
-Identify and resolve contradictions across all sub-answers before final synthesis. Ensure conflicting regulatory sections are reconciled rather than silently passed to the user.
+Identify and resolve contradictions across sub-answers, filtering out evidence-free
+and weak sub-answers before conflict analysis, and separately detecting cross-domain
+retrieval failures (which are not regulatory conflicts).
 
 ### Input
 ```typescript
-input: SubAnswer[]    // All completed sub-answers from the parallel loop
+input: SubAnswer[]    // All sub-answers including skipped=true ones
 ```
 
 ### Process
 
-**Step 1 — Claim Cross-Examination**
-1. Extract all supported factual claims across all `SubAnswer` objects
-2. For each pair of claims from different sub-answers, run LLM comparison:
+**Step 1 — Active / Skipped Split**
+
+```python
+active  = [sa for sa in sub_answers if not sa.skipped]
+skipped = [sa for sa in sub_answers if sa.skipped]
+```
+
+Skipped sub-answers bypass all conflict detection and are appended unchanged to
+`resolved_answers`. Log skipped count at INFO level.
+
+If `len(active) <= 1`: return immediately with `resolved_answers = active + skipped`,
+`unresolved_conflicts = []`, `domain_mismatches = []`.
+
+**Step 2 — Confidence Threshold Filter**
+
+```python
+eligible          = [sa for sa in active if sa.confidence >= CONSISTENCY_CONF_THRESHOLD]  # 0.3
+low_conf_excluded = [sa for sa in active if sa.confidence <  CONSISTENCY_CONF_THRESHOLD]
+```
+
+Sub-answers below 0.3 have `claim_verification` entries based on noise chunks. LLM
+contradiction calls against those claims waste tokens and produce spurious conflicts.
+
+`low_conf_excluded` sub-answers:
+- Each gets flag `"LOW_CONF_EXCLUDED_FROM_CONFLICT_CHECK"` appended
+- Pass through to `resolved_answers` unchanged (they still reach Stage 7)
+- NOT included in contradiction LLM calls
+
+If `len(eligible) <= 1` after this filter: return early with no conflicts, returning
+`resolved_answers = eligible + low_conf_excluded + skipped`.
+
+**Step 3 — Domain Coherence Pre-Check**
+
+When retrieval returns chunks from the wrong FDA domain, two sub-answers may cite
+incompatible domains. This is a retrieval failure, not a regulatory conflict, and must
+be reported separately so the frontend can render appropriate messaging.
+
+Part-number → domain lookup (`_PART_RANGES`):
+
+| Part range | Domain |
+|---|---|
+| 1–99 | administrative |
+| 100–199 | food |
+| 200–499 | drug |
+| 500–599 | animal |
+| 600–699 | biological |
+| 700–799 | cosmetic |
+| 800–999 | device |
+| 1000–1099 | device |
+| 1100–1199 | tobacco |
+| 1200–1299 | administrative |
+
+Helpers: `_part_number_from_section(section)` (regex), `_domain_from_part(int)`,
+`_dominant_domain(sub_answer)` (Counter.most_common), `_domains_compatible(d1, d2)`
+(True if same, either None, or either is "administrative").
+
+For each eligible pair `(i, j)`:
+- If `_domains_compatible(...)` is False:
+  - Add `(i, j)` to `domain_mismatch_pairs`
+  - Append `DomainMismatchReport` to `domain_mismatches`
+  - Flag both sub-answers with `"RETRIEVAL_DOMAIN_MISMATCH"` (idempotent)
+
+Log WARNING with mismatch count if any found.
+
+**Step 4 — Claim Cross-Examination**
+
+```python
+for i, j in itertools.combinations(range(len(eligible)), 2):
+    if (i, j) in domain_mismatch_pairs:
+        continue   # skip — retrieval failure, not a conflict
+    # run pairwise LLM contradiction check between eligible[i] and eligible[j]
+```
+
+1. Extract all supported factual claims for each pair
+2. For each claim pair across different sub-answers, run LLM comparison:
    - "Do these two regulatory claims contradict each other? Answer YES or NO, then briefly explain."
 3. Flag pairs where LLM returns YES as potential conflicts
 
-**Step 2 — Conflict Identification**
+**Step 5 — Conflict Identification**
 For each flagged contradiction pair:
-1. Identify the `cfr_section` values cited by each claim
-2. Build a `ConflictReport` with:
-   - `sub_question_ids` of the affected sub-answers
-   - `conflicting_sections` (the two §refs in conflict)
-   - `description` (LLM-generated explanation of the contradiction)
-   - `resolved = false` initially
+1. Identify `cfr_section` values cited by each claim
+2. Build `ConflictReport` with `sub_question_ids`, `conflicting_sections`,
+   `description`, `resolved = false`
 
-**Step 3 — Conflict Resolution (automatic)**
-
-Apply resolution rules in order:
+**Step 6 — Conflict Resolution (automatic)**
 
 Rule 1 — Section specificity:
-- A more specific section (lower-level, e.g., §101.54) overrides a more general one (e.g., Part 101 introductory text)
-- Specificity determined by section number depth and `section_title`
+- More specific section (e.g., §101.54) overrides more general (e.g., Part 101 intro)
 - If resolved: set `resolved = true`, `winning_section`, `resolution = "Resolved by section specificity"`
 
 Rule 2 — Recency:
-- Compare `effective_date` of the conflicting chunks
-- More recent section wins
+- Compare `effective_date` of conflicting chunks; more recent wins
 - If resolved: set `resolved = true`, `winning_section`, `resolution = "Resolved by effective_date"`
 
 Rule 3 — Unresolvable:
-- If neither rule applies or both sections have equal priority:
-- Set `resolved = false`
-- Keep in `unresolved_conflicts` for surfacing in the final answer
+- Set `resolved = false`, keep in `unresolved_conflicts`
 
-**Step 4 — Sub-Answer Update**
-For resolved conflicts: update the losing sub-answer's `answer` text and `caveats` to reflect the resolution. Add flag `"CONFLICT_RESOLVED"`.
+**Step 7 — Sub-Answer Update**
+For resolved conflicts: update losing sub-answer's `answer` and `caveats`. Add flag `"CONFLICT_RESOLVED"`.
 
 ### Output
 ```typescript
 output: {
-  resolved_answers: SubAnswer[],
-  unresolved_conflicts: ConflictReport[]
+  resolved_answers: SubAnswer[],          // eligible + low_conf_excluded + skipped
+  unresolved_conflicts: ConflictReport[],
+  domain_mismatches: DomainMismatchReport[]
 }
 ```
+
+`domain_mismatches` is also stored in `ComplianceState.domain_mismatches` and always
+returned (empty list when no mismatches).
 
 ### Error Handling
 - LLM claim comparison failure → skip that pair, log warning, do not block
@@ -877,52 +1182,136 @@ output: {
 ## Stage 7 — Final Synthesis Agent
 
 ### Objective
-Merge all resolved sub-answers into a single structured compliance response. Every claim must carry an inline §citation. Surface all flags, conflicts, and confidence signals.
+Merge all resolved sub-answers into a single structured compliance response. Every
+claim must carry an inline §citation. Apply weighted confidence scoring, designate a
+primary sub-answer to drive the ruling, derive numeric/threshold answers explicitly,
+and surface all flags, conflicts, and confidence signals including partial-information
+context.
 
 ### Input
 ```typescript
 input: {
-  resolved_answers: SubAnswer[],
+  resolved_answers: SubAnswer[],           // includes skipped and low-conf
   unresolved_conflicts: ConflictReport[],
+  domain_mismatches: DomainMismatchReport[],
   original_query: string
 }
 ```
 
 ### Process
 
-**Step 1 — Ruling Determination**
-1. Send all sub-answers to LLM
-2. LLM produces a direct `ruling`: `"YES"`, `"NO"`, or `"CONDITIONAL"`
-3. LLM produces a `ruling_summary` (1–2 sentences)
+**Step 0 — Filter Skipped Sub-Answers**
 
-**Step 2 — Requirements Assembly**
-1. Extract all compliance requirements across sub-answers
+```python
+all_answers      = state.get("resolved_answers", state.get("sub_answers", []))
+resolved_answers = [sa for sa in all_answers if not sa.skipped]
+skipped_count    = len(all_answers) - len(resolved_answers)
+```
+
+All subsequent steps operate on `resolved_answers` only. If `resolved_answers` is empty
+(every sub-question was skipped): return `ruling = "NO"` with `confidence_level = "LOW"`.
+
+**Step 1 — Partial Information Note (`_build_partial_info_note`)**
+
+```python
+total    = len(all_answers)
+answered = len(resolved_answers)
+reliable = sum(1 for sa in resolved_answers if sa.confidence >= 0.3)
+```
+
+Generates a human-readable note when any gap exists, e.g.:
+> "1 of 3 sub-question(s) found no supporting evidence; 1 of 2 answered
+>  sub-question(s) had low retrieval confidence (<30%). Ruling is based on
+>  partial information."
+
+Returns `""` when all sub-questions were answered with acceptable confidence.
+
+**Step 2 — Primary Sub-Answer Designation**
+
+```python
+primary = max(resolved_answers, key=lambda sa: sa.confidence)
+```
+
+`_build_ruling_user_content(query, resolved_answers, primary, partial_info)` formats
+sub-answers for the ruling LLM with explicit labels:
+
+```
+[PRIMARY — rule primarily from this] Sub-question (confidence=0.63): ...
+[SUPPORTING] Sub-question (confidence=0.21): ...
+
+Context note: {partial_info if present}
+```
+
+**Step 3 — Ruling Determination**
+
+Ruling LLM system prompt includes two key clauses:
+
+**PRIORITY clause:** "Rule primarily from the [PRIMARY] sub-answer. Use SUPPORTING
+sub-answers only if their content is consistent and non-contradictory with the primary."
+
+**REASONING STEP clause (conditional):** "If the PRIMARY sub-answer retrieved relevant
+numeric values (DRV, percentage threshold, serving size limit), derive the answer
+mathematically and state the calculation in `reasoning_steps`. Example: 'Protein
+DRV=50g. Excellent source threshold=20% DV=10g. 20g>10g → YES.' Only compute from
+values explicitly present in the sub-answers. Do NOT invent numbers. If no calculation
+is needed, return `reasoning_steps` as []."
+
+LLM produces:
+- `ruling`: `"YES"`, `"NO"`, or `"CONDITIONAL"`
+- `ruling_summary` (1–2 sentences)
+- `reasoning_steps`: string array (empty `[]` for qualitative rulings)
+
+`max_tokens` set to 1200 (raised from 1024) to accommodate reasoning output.
+
+**Step 4 — Requirements Assembly**
+1. Extract all compliance requirements across `resolved_answers`
 2. Deduplicate overlapping requirements
 3. Format each as `{ item: string, citation: "[§X.XX]" }`
 
-**Step 3 — Confidence Level Computation**
-1. Average `confidence` scores across all `SubAnswer` objects
-2. Apply Confidence Scoring thresholds to produce `confidence_level`
-3. Generate `confidence_explanation` that references which sub-questions were LOW_CONFIDENCE if any
+**Step 5 — Weighted Confidence Level Computation**
 
-**Step 4 — Regulation Excerpts**
-1. Collect all `ResolvedChunk` objects used across all sub-answers
+```python
+strong = [sa for sa in resolved_answers if sa.confidence >= SYNTHESIZER_WEAK_THRESHOLD]  # 0.3
+weak   = [sa for sa in resolved_answers if sa.confidence <  SYNTHESIZER_WEAK_THRESHOLD]
+pool   = strong if strong else resolved_answers
+avg    = mean(sa.confidence for sa in pool)
+```
+
+Apply thresholds to `avg` → `confidence_level`. The `confidence_explanation` reports
+the count of strong sub-answers and notes when weak ones were excluded from scoring.
+
+No automatic downgrade for skipped sub-questions: the `partial_information_note` is
+informational, not a penalty.
+
+**Step 6 — Regulation Excerpts**
+1. Collect all `ResolvedChunk` objects used across `resolved_answers`
 2. Deduplicate by `cfr_section`
 3. Include verbatim `text` and `cfr_section` for each unique section
 
-**Step 5 — Full Answer Assembly**
+**Step 7 — Full Answer Assembly**
+
 Assemble `FinalAnswer` with all fields populated:
 - `ruling` and `ruling_summary`
+- `reasoning_steps` (from ruling LLM; `[]` when not applicable)
 - `requirements` with §citations
 - `confidence_level` and `confidence_explanation`
 - `regulation_excerpts`
 - `unresolved_conflicts` (pass through from Stage 6)
+- `domain_mismatches` (pass through from Stage 6; distinguishes retrieval failures
+  from regulatory conflicts)
 - `low_confidence_sub_questions` (sub-questions where `confidence < 0.5`)
-- `caveats` (aggregated from all sub-answers, deduplicated)
-- `compliance_checklist` (LLM-generated numbered list of what the user must do to comply)
-- `all_citations` (deduplicated list of every `cfr_section` referenced across all sub-answers)
+- `caveats` (aggregated from `resolved_answers`, deduplicated)
+- `compliance_checklist` (LLM-generated numbered list of what the user must do)
+- `all_citations` (deduplicated list of every `cfr_section` referenced)
+- `partial_information_note` (string or null; see Step 1)
 
-**Inline citation rule:** Every sentence in the final answer that contains a factual regulatory claim must end with `[§X.XX]`. No factual claim appears without a citation. The LLM is explicitly instructed to enforce this.
+`_build_query_response(final_answer, unresolved_conflicts, domain_mismatches)` renders:
+- `reasoning_steps` between `ruling_summary` and `requirements` as `**Reasoning:** - <step>` lines
+- `partial_information_note` as an italic footnote at the bottom
+
+**Inline citation rule:** Every sentence containing a factual regulatory claim must
+end with `[§X.XX]`. No factual claim appears without a citation. The LLM is explicitly
+instructed to enforce this.
 
 ### Output
 ```typescript
@@ -963,18 +1352,20 @@ Merge HyPE results with primary results before RRF.
 
 ## Agent Summary
 
-| Component | Stage | Input | Output | Retry |
+| Component | Stage | Input | Output | Retry / Fallback |
 |---|---|---|---|---|
-| Query Analysis Agent | 1 | `UserQuery` | `AnalyzedQuery` | 1 retry on LLM failure |
-| Sub-Question Decomposition Agent | 2 | `AnalyzedQuery` | `SubQuestion[]` | 1 retry on LLM failure |
+| Query Analysis Agent | 1 | `UserQuery` | `AnalyzedQuery` (+ hoisted clarification keys) | 1 retry on LLM failure |
+| Sub-Question Decomposition Agent | 2 | `AnalyzedQuery` (incl. `fda_domain`, `is_multi_part`) | `SubQuestion[]` with validated variants | 1 retry on LLM; per-variant fallback to sub-q text |
 | Query Expansion | Per sub-Q | `SubQuestion` | Embedded `QueryVariants` | None |
-| Flow A — Routed Retrieval | Per sub-Q | `QueryVariants` + embeddings | `RetrievedChunk[]` | 1 retry on Qdrant failure |
+| CFR Part Classifier | Per sub-Q (Flow A) | sub-q text + domain-filtered part index + `explicit_refs` hint | predicted parts + confidence | Falls back to no-context if part index missing |
+| Flow A — Routed Retrieval | Per sub-Q | `QueryVariants` + embeddings | `RetrievedChunk[]` | 1 retry on Qdrant failure; empty set if classifier skips |
 | Flow B — Global Retrieval | Per sub-Q | `QueryVariants` + embeddings | `RetrievedChunk[]` | 1 retry on Qdrant failure |
 | RRF Merge & Deduplication | Per sub-Q | Flow A + Flow B results | `RankedChunk[]` (~80) | None |
 | Cross-Encoder Reranker | Per sub-Q | `RankedChunk[]` (~80) | `RankedChunk[]` (top 12) | 1 retry; fallback to RRF order |
-| CRAG Evaluator | Per sub-Q | Top-K chunks + sub-question | `CRAGResult` | Max 3 reformulation retries |
+| CRAG Evaluator | Per sub-Q | Top-K chunks + sub-question + `best_chunks_seen` | `CRAGResult` (incl. `best_chunks_seen`) | Max 3 reformulation retries; retry 2 = section-anchor strategy |
+| Skip-No-Evidence Gate | Per sub-Q | `CRAGResult` + `best_chunks_seen` | `SubAnswer(skipped=true)` OR continues | n/a — single check |
 | Cross-Reference Resolution Agent | Per sub-Q | `CRAGResult` | `ResolvedChunk[]` | Per-section skip on failure |
 | Claim-Level Grounding Verification | Per sub-Q | Draft answer + `ResolvedChunk[]` | Verified answer + `ClaimVerification[]` | None; pruning handles failures |
 | Sub-Answer Synthesis Agent | Per sub-Q | All above outputs | `SubAnswer` | 1 retry on LLM failure |
-| Consistency & Conflict Detection Agent | 6 | `SubAnswer[]` | Resolved answers + `ConflictReport[]` | Skip failed pairs, continue |
-| Final Synthesis Agent | 7 | Resolved answers + conflicts | `FinalAnswer` | 1 retry; fallback to raw sub-answers |
+| Consistency & Conflict Detection Agent | 6 | `SubAnswer[]` (active + skipped) | `{ resolved_answers, unresolved_conflicts, domain_mismatches }` | Skip failed pairs; continue |
+| Final Synthesis Agent | 7 | Resolved answers + conflicts + domain mismatches | `FinalAnswer` (weighted conf, primary sub-answer, `reasoning_steps`, `partial_information_note`) | 1 retry; fallback to raw sub-answers |

@@ -13,6 +13,7 @@ Usage:
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import dataclass, field
 from typing import Optional
 import os
@@ -188,63 +189,73 @@ class CFRRetriever:
         self._model = None
         self._reranker = None
         self._client = None
+        self._model_lock = threading.Lock()
+        self._reranker_lock = threading.Lock()
+        self._client_lock = threading.Lock()
 
     # ── Lazy loaders ──────────────────────────────────────────────────────
 
     @property
     def client(self):
         if self._client is None:
-            from qdrant_client import QdrantClient
-            self._client = QdrantClient(
-                url=self.config.qdrant_url,
-                api_key=self.config.qdrant_api_key,
-            )
+            with self._client_lock:
+                if self._client is None:
+                    from qdrant_client import QdrantClient
+                    self._client = QdrantClient(
+                        url=self.config.qdrant_url,
+                        api_key=self.config.qdrant_api_key,
+                    )
         return self._client
 
     @property
     def model(self):
         if self._model is None:
-            from FlagEmbedding import BGEM3FlagModel
-            logger.info("Loading BGE-M3 for retrieval: %s", self.config.model_name)
-            self._model = BGEM3FlagModel(self.config.model_name, use_fp16=self.config.use_fp16)
+            with self._model_lock:
+                if self._model is None:
+                    from FlagEmbedding import BGEM3FlagModel
+                    logger.info("Loading BGE-M3 for retrieval: %s", self.config.model_name)
+                    self._model = BGEM3FlagModel(self.config.model_name, use_fp16=self.config.use_fp16)
         return self._model
 
     @property
     def reranker(self):
         if self._reranker is not None:
             return self._reranker
-        logger.info("Loading reranker: %s", self.config.reranker_model)
-        
-        # We define a custom reranker wrapper here using straight transformers
-        # Because FlagReranker uses tokenizer.prepare_for_model which is removed in transformers 5x
-        import torch
-        from transformers import AutoModelForSequenceClassification, AutoTokenizer
+        with self._reranker_lock:
+            if self._reranker is not None:
+                return self._reranker
+            logger.info("Loading reranker: %s", self.config.reranker_model)
 
-        class SafeTransformersReranker:
-            def __init__(self, model_name, use_fp16=True):
-                self.device = "mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu")
-                dtype = torch.float16 if use_fp16 and self.device != "cpu" else torch.float32
-                self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-                self.model = AutoModelForSequenceClassification.from_pretrained(
-                    model_name, torch_dtype=dtype
-                ).to(self.device)
-                self.model.eval()
+            # Custom reranker using straight transformers — FlagReranker uses
+            # tokenizer.prepare_for_model which is removed in transformers 5.x
+            import torch
+            from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
-            def compute_score(self, sentence_pairs, normalize=True):
-                with torch.no_grad():
-                    inputs = self.tokenizer(
-                        sentence_pairs, 
-                        padding=True, 
-                        truncation=True, 
-                        return_tensors='pt', 
-                        max_length=512
+            class SafeTransformersReranker:
+                def __init__(self, model_name, use_fp16=True):
+                    self.device = "mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu")
+                    dtype = torch.float16 if use_fp16 and self.device != "cpu" else torch.float32
+                    self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+                    self.model = AutoModelForSequenceClassification.from_pretrained(
+                        model_name, torch_dtype=dtype
                     ).to(self.device)
-                    scores = self.model(**inputs, return_dict=True).logits.view(-1, ).float()
-                    if normalize:
-                        scores = torch.sigmoid(scores)
-                    return scores.cpu().tolist()
+                    self.model.eval()
 
-        self._reranker = SafeTransformersReranker(self.config.reranker_model, use_fp16=True)
+                def compute_score(self, sentence_pairs, normalize=True):
+                    with torch.no_grad():
+                        inputs = self.tokenizer(
+                            sentence_pairs,
+                            padding=True,
+                            truncation=True,
+                            return_tensors='pt',
+                            max_length=512
+                        ).to(self.device)
+                        scores = self.model(**inputs, return_dict=True).logits.view(-1, ).float()
+                        if normalize:
+                            scores = torch.sigmoid(scores)
+                        return scores.cpu().tolist()
+
+            self._reranker = SafeTransformersReranker(self.config.reranker_model, use_fp16=True)
         return self._reranker
 
     # ── Query encoding ────────────────────────────────────────────────────

@@ -81,6 +81,7 @@ def dispatch_sub_questions(state: ComplianceState) -> list:
             "query": state["query"],
             "analyzed_query": state.get("analyzed_query", {}),
             "sub_question": sq,
+            "session_id": state.get("session_id", ""),
         })
         for sq in sub_questions
     ]

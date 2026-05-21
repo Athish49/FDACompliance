@@ -10,12 +10,20 @@ export interface ConflictDetail {
   sections: string[];
 }
 
+export interface DomainMismatch {
+  sub_question_ids: string[];
+  domain_a: string;
+  domain_b: string;
+  description: string;
+}
+
 export interface QueryResponse {
   answer: string;
   citations: Citation[];
   confidence_score: number;
   conflicts_detected: boolean;
   conflict_details: ConflictDetail[];
+  domain_mismatches: DomainMismatch[];
   disclaimer: string;
   retrieved_sections: string[];
   verification_passed: boolean;
@@ -36,6 +44,14 @@ export interface ChatMessage {
 // ── SSE streaming types ────────────────────────────────────────────────────
 
 export type SSEEventName =
+  // v2 node names (current pipeline)
+  | "query_analyzer"
+  | "clarification_response"
+  | "decomposer"
+  | "process_sub_question"
+  | "consistency_detector"
+  | "final_synthesizer"
+  // legacy node names (kept for compatibility)
   | "planner"
   | "retriever"
   | "definition_resolver"
@@ -47,24 +63,33 @@ export type SSEEventName =
 
 export interface SSEEvent {
   event: SSEEventName;
-  // planner
-  intent?: string;
+  // query_analyzer
+  intent_type?: string;
+  needs_clarification?: boolean;
+  entities?: Record<string, string | null>;
+  // decomposer
+  sub_question_count?: number;
   sub_questions?: string[];
-  // retriever
+  // process_sub_question
+  sub_question_text?: string;
+  crag_verdict?: string;
+  confidence?: number;
+  // consistency_detector
+  conflict_count?: number;
+  // final_synthesizer / clarification_response — carries full answer
+  answer?: QueryResponse;
+  ruling?: string;
+  confidence_level?: string;
+  conflicts_detected?: boolean;
+  // legacy retriever / synthesizer fields
   chunk_count?: number;
   xref_count?: number;
   has_sufficient_coverage?: boolean;
-  // definition_resolver
   definitions_found?: number;
-  // synthesizer
   confidence_score?: number;
   citation_count?: number;
-  // verifier
   verification_passed?: boolean;
   issues_count?: number;
-  // conflict_detector / insufficient_coverage — carries full answer
-  conflicts_detected?: boolean;
-  answer?: QueryResponse;
   // error
   detail?: string;
 }

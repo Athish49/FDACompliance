@@ -23,6 +23,7 @@ from typing import Optional
 
 from .extractor import extract_all
 from .embedder import EmbedderConfig, embed_and_store
+from .part_index import generate_part_index, PART_INDEX_PATH
 
 logger = logging.getLogger(__name__)
 
@@ -210,6 +211,36 @@ def run_pipeline(config: Optional[PipelineConfig] = None) -> PipelineResult:
             embed_step.error = str(exc)
             embed_step.duration_seconds = time.time() - step_start
             logger.exception("[EMBED] Failed: %s", exc)
+
+    # ── Step 3: PART INDEX ────────────────────────────────────────────────
+    index_step = StepResult(name="part_index")
+    result.steps.append(index_step)
+
+    chunks_file = Path(config.chunks_output_path)
+    if not chunks_file.exists():
+        index_step.status = StepStatus.SKIPPED
+        logger.info("[PART_INDEX] Skipped — chunks file not found at %s", chunks_file)
+    else:
+        index_step.status = StepStatus.RUNNING
+        step_start = time.time()
+        try:
+            index_result = generate_part_index(chunks_file)
+            index_step.status = StepStatus.DONE
+            index_step.result = {
+                "total_parts": index_result["total_parts"],
+                "output_path": str(PART_INDEX_PATH),
+            }
+            index_step.duration_seconds = time.time() - step_start
+            logger.info(
+                "[PART_INDEX] Done — %d parts indexed in %.1fs",
+                index_result["total_parts"],
+                index_step.duration_seconds,
+            )
+        except Exception as exc:
+            index_step.status = StepStatus.FAILED
+            index_step.error = str(exc)
+            index_step.duration_seconds = time.time() - step_start
+            logger.exception("[PART_INDEX] Failed: %s", exc)
 
     # ── Finalise ──────────────────────────────────────────────────────────
     failed_steps = [s for s in result.steps if s.status == StepStatus.FAILED]

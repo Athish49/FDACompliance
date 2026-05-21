@@ -8,6 +8,7 @@ from typing import Annotated, TypedDict
 class ComplianceState(TypedDict, total=False):
     # ── Input ──────────────────────────────────────────────────────────────────
     query: str
+    session_id: str
 
     # ── Stage 1: Query Analysis ────────────────────────────────────────────────
     analyzed_query: dict       # intent_type, entities, is_multi_part, explicit_refs
@@ -27,6 +28,7 @@ class ComplianceState(TypedDict, total=False):
     # ── Stage 6: Consistency & Conflict Detection ─────────────────────────────
     resolved_answers: list[dict]
     unresolved_conflicts: list[dict]   # list[ConflictReport]
+    domain_mismatches: list[dict]      # list[DomainMismatchReport] — retrieval failures, not regulatory conflicts
 
     # ── Stage 7: Final Synthesis ──────────────────────────────────────────────
     final_answer: dict      # v2 FinalAnswer schema

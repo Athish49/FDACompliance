@@ -14,6 +14,13 @@ logger = logging.getLogger(__name__)
 
 litellm.suppress_debug_info = True
 
+# Suppress LiteLLM's verbose INFO logs ("LiteLLM completion() model=...",
+# "Wrapper: Completed Call..."). Keep WARNING+ so model fallback failures
+# still surface. Disable propagation to stop the same event printing twice
+# (once via LiteLLM's own StreamHandler, once via the root logger).
+logging.getLogger("LiteLLM").setLevel(logging.WARNING)
+logging.getLogger("LiteLLM").propagate = False
+
 
 _NVIDIA_API_BASE = "https://integrate.api.nvidia.com/v1"
 

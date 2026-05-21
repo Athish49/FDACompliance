@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 
 from agents.llm import llm_completion_json, parse_llm_json
+from agents.session_logger import get_session
 from agents.state import ComplianceState
 
 logger = logging.getLogger(__name__)
@@ -64,9 +65,23 @@ def query_analyzer_node(state: ComplianceState) -> dict:
     result.setdefault("clarification_question", None)
 
     logger.info(
-        "Query analysis: intent=%s, multi_part=%s, clarification=%s",
-        result["intent_type"], result["is_multi_part"], result["needs_clarification"],
+        "[query_analyzer] intent=%s | multi_part=%s | clarification=%s | query='%s'",
+        result["intent_type"],
+        result["is_multi_part"],
+        result["needs_clarification"],
+        query[:120],
     )
+
+    session_id = state.get("session_id", "")
+    if session_id:
+        sl = get_session(session_id)
+        if sl:
+            sl.log_query_analysis(
+                intent=result["intent_type"],
+                entities=result["entities"],
+                is_multi_part=result["is_multi_part"],
+                needs_clarification=result["needs_clarification"],
+            )
 
     return {
         "analyzed_query": result,

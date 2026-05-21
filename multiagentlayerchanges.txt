@@ -1,0 +1,533 @@
+Multi-Agent Layer-by-Layer Review — Change Log
+================================================
+
+Layer 1 — Query Analyzer (query_analyzer.py)
+---------------------------------------------
+Status: NO CHANGES REQUIRED
+
+Verification against multiagent_v2.md Stage 1 spec:
+
+1. Classify intent_type (compliance_check | definition | procedure | penalty)
+   → DONE. LLM classifies and result is stored in analyzed_query.
+
+2. Extract entities (product_type, claim_type, fda_domain)
+   → DONE. All three extracted with safe defaults for missing values.
+
+3. Extract explicit_refs (any §X.XX or "21 CFR X.XX" the user typed)
+   → DONE. LLM extracts them into analyzed_query.entities.explicit_refs.
+
+4. Flag is_multi_part
+   → DONE. Extracted and stored in analyzed_query.
+
+5. Flag needs_clarification + generate clarification_question
+   → DONE. Both stored in analyzed_query AND hoisted to top-level state keys
+     (needs_clarification, clarification_question) so the conditional edge in
+     graph.py can route without unpacking the dict.
+
+Downstream pass-through:
+   → analyzed_query (all extracted fields) is stored in ComplianceState and
+     forwarded to every parallel branch via dispatch_sub_questions (graph.py:82).
+   → Retrieval pipeline consumes intent_type and explicit_refs from it.
+   → No data is dropped at the handoff.
+
+Gaps noted for later layers (out of scope for Layer 1):
+   - fda_domain is extracted here but not referenced in the decomposer's LLM
+     prompt (Layer 2 issue). FIXED in Layer 2 pass.
+   - is_multi_part is extracted here but not used by the decomposer to gate
+     single vs. multi sub-question output (Layer 2 issue). FIXED in Layer 2 pass.
+   - product_type, claim_type, fda_domain are not passed to the CFR part
+     classifier LLM prompt in the retrieval pipeline (Layer 3 issue).
+
+
+Layer 2 — Decomposer (decomposer.py)
+--------------------------------------
+Status: 3 CHANGES MADE
+
+Change 1 — Tightened decomposition prompt (_DECOMPOSE_SYSTEM)
+  Problem: The old prompt said "avoid overlap" and "if atomic return single" but gave
+           no guidance on phrasing. The LLM was generating yes/no questions like
+           "Does 20g protein per serving qualify as an 'excellent source' claim?" which
+           retrieve drug/device documents instead of food labeling regulations, because
+           semantic search finds "criteria" and "claim" in unrelated regulatory text.
+  Fix:     Rewrote the system prompt with explicit rules:
+           - Sub-question text MUST be a declarative retrieval topic, not a question
+           - Yes/no questions are explicitly prohibited with before/after examples
+           - Two sub-questions that would retrieve the same CFR sections must be merged
+           - is_multi_part=false → produce EXACTLY 1 sub-question (hard constraint)
+           - is_multi_part=true  → minimum needed, max 4
+
+Change 2 — Added fda_domain and is_multi_part to decomposition LLM context
+  Problem: The decomposer's user_content included intent_type, product_type, claim_type,
+           and explicit_refs from analyzed_query, but omitted fda_domain and is_multi_part
+           — both extracted by the query analyzer. The LLM had no signal on whether to
+           produce 1 or multiple sub-questions.
+  Fix:     Added both fields to user_content passed to the decomposition LLM call.
+           is_multi_part is now explicitly shown to the LLM alongside the Rule 5 prompt
+           instruction so it can gate the count correctly.
+
+Change 3 — Variant validation (_validate_variant helper + _MIN_VARIANT_LEN = 15)
+  Problem: The variant generation calls (primary, hyde, stepback) could return empty
+           strings or near-empty strings when the LLM succeeded at the API level but
+           produced no meaningful output. The prior code only caught exceptions — a
+           successful call returning "" would propagate as-is. In the run log, SQ-2 and
+           SQ-3 had empty primary and stepback variants, causing retrieval to use
+           vacuous queries that pulled wrong-domain chunks (drug/device regulations).
+  Fix:     Added _validate_variant() function: after each future.result() call, checks
+           that the result is non-empty and >= 15 characters. If not, logs a warning and
+           returns the sub-question text as the safe fallback. Never returns an empty
+           string to the retrieval pipeline.
+
+Architecture clarification (no code change):
+  Sub-questions are already generated in a SINGLE LLM call — they are NOT generated
+  in parallel. The parallel step is variant generation only (primary/hyde/stepback),
+  which runs per sub-question in a ThreadPoolExecutor. Variant calls for different
+  sub-questions run concurrently but each variant set is independent of the others
+  (variants transform one sub-question into 3 retrieval formats, not alternative
+  sub-questions). The duplication/overlap issue was a prompt quality problem, not
+  an architecture problem.
+
+Entity constraint problem — Solution B implemented (retrieval_pipeline.py):
+  Concern: explicit_refs from the query analyzer were passed to _classify_cfr_parts()
+           which short-circuited the LLM and returned confidence=1.0 unconditionally,
+           forcing Flow A into those parts for ALL sub-questions regardless of whether
+           a given sub-question was actually about those sections. A sub-question
+           covering a different regulatory domain was silently constrained to the wrong
+           Part with maximum confidence.
+  Options evaluated:
+  A. Per-sub-question entity inheritance flag (not implemented).
+  B. IMPLEMENTED — Remove hard-override; pass explicit_refs as hints to LLM.
+  C. Strip explicit_refs from classifier entirely (not implemented).
+  D. Similarity gate (not implemented).
+
+Change 4 — Remove hard-override in _classify_cfr_parts (retrieval_pipeline.py)
+  Before: If explicit_refs were non-empty, the function extracted part numbers from
+          them via regex and returned (parts, 1.0) immediately — bypassing the LLM
+          classifier entirely. confidence=1.0 meant Flow A always fired for those
+          parts, constraining every sub-question to the same cited sections as the
+          original query, even when sub-questions covered unrelated regulatory areas.
+  After:  explicit_refs are appended to the user content as a labelled hint:
+            "Hint — original query mentioned these CFR sections: [...]"
+          The classifier system prompt instructs the LLM to treat them as context
+          only and classify independently if the sub-question covers a different topic.
+          The LLM now returns its own confidence score. If it judges the refs
+          irrelevant to this sub-question, it can return low confidence (< 0.60),
+          which causes Flow A to be skipped and Flow B to cover full retrieval.
+  File:   backend/agents/retrieval_pipeline.py — _PART_CLASSIFIER_SYSTEM_BASE and
+          _classify_cfr_parts()
+
+
+Layer 3 — CFR Part Classifier (retrieval_pipeline.py + ingestion/)
+--------------------------------------------------------------------
+Status: 3 CHANGES MADE
+
+Background — the problem:
+  LLMs have uncertain pretrained knowledge of which 21 CFR Part covers which
+  regulatory topic. Without grounding, the classifier guesses from weights and
+  produces wrong or low-confidence part numbers, causing Flow A to either skip
+  (no benefit) or search the wrong part (noisy results). The prior hard-override
+  using explicit_refs (Solution B, documented in Layer 2) addressed one failure
+  mode; this layer addresses the classifier's general accuracy.
+
+Change 1 — CFR Part knowledge base (new file: backend/ingestion/part_index.py)
+  What: A new ingestion module that reads cfr_chunks.json and writes a compact
+        cfr_part_index.json to backend/data/. The file contains every unique
+        CFR Part found in the indexed corpus with its title and subchapter letter.
+  Size: 256 active parts from the current corpus. At ~50 chars/entry this is
+        ~12,800 chars ≈ ~3,200 tokens — fits in every model in the LLM chain.
+  Format per entry:
+    "<part_number>": {
+      "title": "<Part title from CFR XML>",
+      "subchapter": "<letter A-L>",
+      "subchapter_name": "<subchapter full name>"
+    }
+  Source of truth: built directly from the indexed chunks, not a static list,
+                   so it is always in sync with what is actually in Qdrant.
+  Generated at: backend/data/cfr_part_index.json (committed to project, not Qdrant)
+
+Change 2 — Part index regeneration wired into ingestion pipeline (pipeline.py)
+  What: Added Step 3 (part_index) to run_pipeline(). After extract and embed
+        complete, generate_part_index() is called with the chunks file path.
+        Step runs whenever the chunks file exists — skipped only if chunks are
+        absent (e.g. embed-only run with no chunks file present).
+  Result: Every ingestion run automatically refreshes the part index. If CFR
+          data is updated and re-ingested, the classifier's knowledge base
+          updates automatically with no manual step.
+  Status reported: step name "part_index" appears in PipelineResult.steps with
+                   total_parts count and output_path.
+
+Change 3 — Domain pre-filter + knowledge base context in classifier (retrieval_pipeline.py)
+  What: The classifier now loads the part index at startup (lazy, cached,
+        thread-safe) and applies a Python-based domain filter before building
+        the LLM prompt. The domain comes from fda_domain extracted by the
+        query analyzer (Layer 1) and now correctly flows into the classifier.
+  Domain → subchapter mapping (pure Python, no LLM call):
+    food         → Subchapter B  (61 parts)
+    drug         → Subchapters C, D  (51 parts)
+    animal       → Subchapter E
+    biological   → Subchapter F
+    cosmetic     → Subchapter G
+    device       → Subchapters H, I, J  (44 parts)
+    tobacco      → Subchapter K
+    administrative → Subchapters A, L
+    None / unknown → all 256 parts (no filter)
+  Context passed to LLM: only the filtered part list, in compact text format
+    "Part 101: Food Labeling\nPart 102: Common Or Usual Name..."
+  Fallback: if the index file doesn't exist (first run before ingestion), the
+            classifier silently omits the context and works as before.
+  Call site updated: run_sub_question_pipeline() now extracts fda_domain from
+                     analyzed_query.entities and passes it to _classify_cfr_parts().
+
+Multi-part output question (discussed, not implemented):
+  The LLM classifier already outputs a list of parts ("parts": ["101", "131"]).
+  Asking it to also score each individual part separately would add response
+  overhead with little benefit — LLMs are poorly calibrated on per-item
+  confidence scores. The simpler approach (single confidence for the whole
+  prediction, let LLM pick from the filtered context) is retained as-is.
+
+Claim-type lookup table (discussed, not implemented in this pass):
+  A Python dict mapping claim_type values from the query analyzer to known
+  Part numbers would provide a fast-path that skips the LLM entirely for
+  well-known regulatory patterns (e.g., nutrient_content → Part 101).
+  Deferred — would be a small additive change to _classify_cfr_parts() once
+  the current accuracy improvements are validated in production logs.
+
+
+Layer 5 — CRAG Evaluator (retrieval_pipeline.py)
+--------------------------------------------------
+Status: 5 CHANGES MADE
+
+New constants added:
+  CRAG_THRESHOLD_VERY_HIGH   = 0.85  (relaxed CORRECT path threshold)
+  CRAG_AMBIGUOUS_SOFT_CORRECT = 0.70 (AMBIGUOUS → skip supplemental when top >= this)
+  CRAG_BEST_CHUNK_MIN_SCORE  = 0.30  (min top_score to update best_chunks_seen)
+
+Change 1 — Relaxed CORRECT condition (_crag_verdict)
+  Before: CORRECT required top_score >= 0.70 AND above_low >= 2 (at least 2 chunks
+          above CRAG_THRESHOLD_LOW=0.45). In the log, SQ-1 scored 0.8761 on the top
+          chunk but only 1 chunk was above 0.45, so it fell to AMBIGUOUS despite the
+          top chunk being strongly relevant.
+  After:  Two CORRECT paths:
+          - top_score >= 0.85 (CRAG_THRESHOLD_VERY_HIGH) AND above_low >= 1
+            → one strongly supporting chunk is enough when the top is very high.
+          - top_score >= 0.70 (CRAG_THRESHOLD_HIGH) AND above_low >= 2
+            → original condition preserved as the standard path.
+  Effect: SQ-1's run log scenario (top=0.8761, 1 above 0.45) now correctly
+          returns CORRECT instead of AMBIGUOUS.
+
+Change 2 — AMBIGUOUS soft-CORRECT (CRAG loop)
+  Before: Any AMBIGUOUS verdict triggered a supplemental broad search, re-merge,
+          and re-rank regardless of the top chunk's score.
+  After:  If verdict is AMBIGUOUS AND top_score >= CRAG_AMBIGUOUS_SOFT_CORRECT
+          (0.70), the supplemental search is skipped and the loop breaks immediately
+          with caveat_flag=True. The top chunk already meets the CORRECT threshold;
+          adding more chunks risks diluting a good result with noise.
+          Only genuinely ambiguous cases (top_score < 0.70) still trigger the
+          supplemental search.
+
+Change 3 — Reformulation validation (CRAG loop)
+  Before: _reformulate_query() result was used directly. Empty strings, whitespace-
+          only strings, or strings identical to the previous query would silently
+          propagate, causing retrieval to repeat the same (failing) query.
+  After:  After each _reformulate_query() call, three checks:
+          - empty or None → invalid
+          - len < _REFORMULATE_MIN_LEN (15) → invalid
+          - strip() == current_primary.strip() → invalid (no change)
+          If any check fails: log WARNING with the rejected string, keep
+          current_primary unchanged. The reformulation is still appended to
+          reformulation_log so the session logger captures the failure.
+
+Change 4 — Best chunks carry-forward across CRAG retries (CRAG loop)
+  Before: Each retry started with a fresh reranked_chunks. At MAX_RETRIES_EXCEEDED
+          the pipeline used whatever the last attempt returned — often the worst
+          result since later retries on a failing query tend to retrieve similar
+          irrelevant content.
+  After:  best_chunks_seen is maintained across all retry_count iterations.
+          Updated after every rerank if:
+            reranked_chunks is non-empty AND top_score > CRAG_BEST_CHUNK_MIN_SCORE (0.30)
+            AND top_score > best_chunks_seen[0]["reranker_score"] (strictly better)
+          At LOW_CONFIDENCE (MAX_RETRIES_EXCEEDED): if best_chunks_seen[0] scored
+          higher than the current reranked_chunks[0], restore best_chunks_seen as
+          the final chunk pool. This recovers chunks like §131.200/§101.9 at 0.132
+          that were better than the empty/wrong results from later retries.
+
+Change 5 — Section anchor reformulation strategy (_reformulate_query, retry_count==2)
+  Before: retry_count==2 strategy tried HyDE passage or stepback variant. In the
+          log, both were empty strings (variant generation had silently failed),
+          so the code fell back to sub_q_text and the 4th attempt produced a
+          hallucinated citation ("21 CFR § 101.112(b)(3)").
+  After:  retry_count==2 strategy priority order:
+          1. Section anchor (if best_chunks_seen is non-empty):
+             Extract cfr_section from best_chunks_seen[0] via hierarchy.section.number
+             or regex on cfr_citation. Append "21 CFR §{section}" to sub_q_text.
+             Example: "FDA protein labeling requirements 21 CFR §101.9"
+             This boosts sparse (lexical) retrieval toward the correct section without
+             hallucination — the section number is grounded in actual retrieved content.
+          2. HyDE passage fallback (if non-empty and >= 15 chars)
+          3. Stepback query fallback (if non-empty and >= 15 chars)
+          4. sub_q_text (unchanged, last resort)
+          Helper added: _extract_best_section(best_chunks_seen) — checks top 3 chunks,
+          tries hierarchy.section.number first, then regex on cfr_citation.
+
+  Note on "site:§X" analogy: the section anchor appends a real CFR section reference
+  to the query text. BGE-M3 sparse weights then strongly match any indexed chunk
+  whose text, citation, or cross-references contain that section number, effectively
+  narrowing retrieval to the right regulatory neighbourhood without an LLM call.
+
+
+Layer 6 — Skip Synthesis for Evidence-Free Sub-Answers
+--------------------------------------------------------
+Status: 3 CHANGES MADE
+
+Background — the problem:
+  When a sub-question exhausted all CRAG retries (MAX_RETRIES_EXCEEDED) without
+  ever accumulating usable chunks (best_chunks_seen empty), the retrieval pipeline
+  still produced a sub-answer with confidence=0.2 and a fabricated or vacuous answer
+  string. This noise answer entered the final synthesizer where its 0.2 confidence
+  score dragged down the confidence average across all sub-answers, turning a
+  genuinely HIGH-confidence answer from another sub-question into a MEDIUM or LOW
+  overall confidence. The consistency detector also ran contradiction checks against
+  claims that had no real evidence behind them.
+
+Change 1 — Early return for LOW_CONFIDENCE with no usable chunks (retrieval_pipeline.py)
+  Before: run_sub_question_pipeline() always called the sub-answer synthesizer node
+          after the CRAG loop, even when best_chunks_seen was empty, producing a
+          low-confidence sub-answer with no real retrieval backing.
+  After:  After the CRAG loop, before handing off to synthesis:
+            if crag_verdict == "LOW_CONFIDENCE" and not best_chunks_seen:
+          the pipeline returns early with a structured skipped sub-answer:
+            {
+              "sub_question_id": <id>,
+              "sub_question_text": <text>,
+              "answer": "",
+              "confidence": 0.0,
+              "crag_verdict": "LOW_CONFIDENCE",
+              "caveat_flag": True,
+              "chunks_used": [],
+              "cross_refs_resolved": [],
+              "claim_verification": [],
+              "unverified_claims": [],
+              "citations": [],
+              "caveats": ["LOW_CONFIDENCE_RETRIEVAL"],
+              "flags": ["MAX_RETRIES_EXCEEDED", "SKIPPED_NO_EVIDENCE"],
+              "reformulation_log": <reformulation_log>,
+              "skipped": True,
+            }
+          The "skipped": True sentinel is the key field used by downstream nodes to
+          identify and exclude these sub-answers from synthesis, confidence averaging,
+          and conflict detection.
+  Rationale: best_chunks_seen empty after MAX_RETRIES means the retrieval pipeline
+             genuinely found no supporting regulatory text for this sub-question.
+             Synthesizing an answer from nothing produces noise. Skipping is more
+             honest and prevents the 0.2 score from corrupting overall confidence.
+
+Change 2 — Active/skipped split in consistency detector (consistency.py)
+  Before: consistency_detector_node() ran conflict checks across all sub_answers
+          including evidence-free ones. Skipped sub-answers had no claim_verification
+          entries with is_supported=True, so claim pairs were empty and the pairwise
+          checks silently skipped — but the code still iterated over them, and the
+          loop variable names (sub_answers[i], sub_answers[j]) caused a latent bug
+          where the loop would fail if indexing changed after the active/skipped split.
+  After:
+    active  = [sa for sa in sub_answers if not sa.get("skipped")]
+    skipped = [sa for sa in sub_answers if sa.get("skipped")]
+    — Log skipped count at INFO level.
+    — If len(active) <= 1: return immediately with resolved_answers = active + skipped.
+    — Conflict detection loop now iterates over active only (range(len(active)),
+      active[i], active[j]).
+    — Return: {"resolved_answers": resolved_answers + skipped, ...}
+      Skipped sub-answers pass through untouched so the final synthesizer can
+      count them for logging.
+  Bug fixed: Loop was referencing sub_answers[i]/sub_answers[j] after the split.
+             Changing to active[i]/active[j] ensures correct indexing.
+
+Change 3 — Filter skipped sub-answers from synthesis (final_synthesizer.py)
+  Before: final_synthesizer_node() consumed all resolved_answers including skipped
+          ones. Skipped sub-answers had confidence=0.0, which dragged down the
+          average and could produce a LOW overall confidence even when real sub-
+          answers were HIGH-confidence.
+  After:
+    all_answers     = state.get("resolved_answers", state.get("sub_answers", []))
+    resolved_answers = [sa for sa in all_answers if not sa.get("skipped")]
+    skipped_count   = len(all_answers) - len(resolved_answers)
+    if skipped_count:
+        logger.info("[final_synthesizer] %d skipped sub-answer(s) excluded from synthesis", skipped_count)
+  All downstream logic — confidence averaging, requirement extraction, checklist
+  generation, citation deduplication — now operates only on sub-answers with actual
+  retrieval evidence. If ALL sub-answers are skipped, the existing early-return
+  path (no resolved_answers) returns ruling="NO" with LOW confidence, which is the
+  correct behaviour when no evidence was found for any part of the query.
+
+
+Layer 7 — Consistency Detector Improvements
+--------------------------------------------
+Status: 4 CHANGES MADE across 3 files
+
+Background — two independent problems:
+  1. Low-confidence sub-answers (< 0.3) were entering contradiction analysis even
+     though their claim_verification entries are unreliable. A 0.25-confidence
+     sub-answer may have claim_text strings that look like claims but are based on
+     noise chunks — running pairwise LLM contradiction checks against them wastes
+     LLM calls and can produce spurious "conflicts" based on hallucinated claims.
+  2. When the retrieval pipeline returned chunks from the wrong FDA domain (e.g.,
+     drug regulations for a food labeling question), two sub-answers might cite
+     food regulations vs. drug regulations for the same original question. Running
+     contradiction analysis across incompatible domains generates false conflict
+     reports — the sub-answers aren't in conflict, one of them just retrieved the
+     wrong domain. The root cause is a retrieval failure, not a regulatory dispute.
+
+Change 1 — Confidence threshold filter (consistency.py)
+  Constant: _CONF_THRESHOLD = 0.3
+  Before: All non-skipped sub-answers entered conflict detection regardless of
+          confidence score.
+  After:  active sub-answers are split into two tiers:
+            eligible         = [sa for sa in active if sa.get("confidence", 1.0) >= 0.3]
+            low_conf_excluded = [sa for sa in active if sa.get("confidence", 1.0) < 0.3]
+          low_conf_excluded sub-answers:
+            - Each gets flag "LOW_CONF_EXCLUDED_FROM_CONFLICT_CHECK" appended.
+            - Passed through to resolved_answers unchanged so they still reach the
+              final synthesizer (they have partial evidence, just weak).
+            - Not included in contradiction LLM calls.
+          If len(eligible) <= 1 after this filter, return early with no conflicts.
+
+Change 2 — Domain coherence pre-check (consistency.py)
+  New constants: _PART_RANGES — list of (lo, hi, domain) tuples covering all
+  21 CFR Part number ranges:
+    (1-99)    → administrative   (200-499)  → drug
+    (100-199) → food             (500-599)  → animal
+    (600-699) → biological       (700-799)  → cosmetic
+    (800-999) → device           (1000-1099) → device
+    (1100-1199) → tobacco        (1200-1299) → administrative
+
+  New helpers:
+    _part_number_from_section(section) — regex extracts leading digits from
+      strings like "§101.9", "21 CFR 101.54", "101.9(a)".
+    _domain_from_part(part_int) — linear scan of _PART_RANGES.
+    _dominant_domain(sub_answer) — calls _sections_from_sub_answer(), maps each
+      to a domain, returns the most common via Counter.most_common(1).
+    _domains_compatible(d1, d2) — returns True if same domain, if either is None
+      (undetermined), or if either is "administrative" (cross-cutting).
+
+  New pre-check step before claim comparison:
+    For each eligible pair (i, j):
+      - Compute dominant_domain for each sub-answer.
+      - If _domains_compatible() returns False:
+          * Add (i, j) to domain_mismatch_pairs set.
+          * Append DomainMismatchReport to domain_mismatches list:
+              { sub_question_ids, domain_a, domain_b, description }
+          * Flag both sub-answers with "RETRIEVAL_DOMAIN_MISMATCH" in their
+            flags list (idempotent — checked before appending).
+    If any mismatches found, log WARNING with count.
+
+  In the claim-comparison loop:
+    if (i, j) in domain_mismatch_pairs: continue
+  Contradiction LLM calls are completely skipped for mismatch pairs.
+
+Change 3 — New state key: domain_mismatches (state.py)
+  Added to ComplianceState TypedDict:
+    domain_mismatches: list[dict]  # list[DomainMismatchReport]
+  This separates retrieval failures from genuine regulatory conflicts in the
+  state schema, allowing the final synthesizer and API layer to distinguish them.
+  consistency_detector_node() always returns this key (empty list if no mismatches).
+
+Change 4 — Surface domain_mismatches in final response (final_synthesizer.py)
+  final_synthesizer_node() reads state.get("domain_mismatches", []) and passes it
+  into both final_answer and the _build_query_response() call.
+  _build_query_response() signature extended:
+    def _build_query_response(final_answer, unresolved_conflicts, domain_mismatches=None)
+  The returned dict now includes:
+    "domain_mismatches": domain_mismatches or []
+  This makes retrieval domain failures visible in the API response so the frontend
+  can distinguish "regulatory conflict" (conflict_details) from "retrieval error"
+  (domain_mismatches) and present them with appropriate messaging.
+
+
+Layer 8 — Final Synthesizer Improvements
+------------------------------------------
+Status: 4 CHANGES MADE (all in final_synthesizer.py)
+
+Background — three compounding problems in the original synthesizer:
+  1. Threshold questions (e.g. "does 20g meet 'excellent source'?") require arithmetic:
+     protein DRV=50g, 20% DV=10g, 20g>10g → YES. The old prompt gave all sub-answers
+     equal weight and asked for a ruling — it never prompted the LLM to derive a
+     calculation from the retrieved numbers even when those numbers were present.
+  2. Confidence was computed as a simple mean across all resolved sub-answers. With
+     three sub-answers at [0.6, 0.2, 0.2], the mean is 0.33 → LOW confidence, even
+     though the one sub-answer that directly answered the core question scored 0.6.
+  3. When only 1 of 3 sub-questions was answered reliably, there was no indication
+     in the ruling that it was based on partial information — and confidence was still
+     penalized as if the missing sub-answers were failures of the same question.
+
+Change 1 — Weighted confidence scoring (_compute_confidence_level)
+  Constant: _CONF_WEAK_THRESHOLD = 0.3
+  Before: simple mean over all resolved sub-answers.
+  After:
+    strong = [sa for sa in sub_answers if confidence >= 0.3]
+    weak   = [sa for sa in sub_answers if confidence <  0.3]
+    pool   = strong if strong else sub_answers  # fallback if all are weak
+    avg    = mean(pool confidences)
+  Effect on the motivating example:
+    strong=[0.6], weak=[0.2, 0.2], avg=0.6 → MEDIUM  (was: 0.33 → LOW)
+  Explanation string updated:
+    - Reports count of strong sub-questions used in scoring
+    - Appends "N of M sub-question(s) had weak retrieval (<30%) and were excluded
+      from scoring" when weak sub-answers exist alongside strong ones
+
+Change 2 — Primary sub-answer designation (_select_primary_sub_answer + ruling LLM prompt)
+  New helper: _select_primary_sub_answer(sub_answers) → dict | None
+    Returns max(sub_answers, key=lambda sa: sa.get("confidence", 0.0)).
+
+  New helper: _build_ruling_user_content(query, resolved_answers, primary, partial_info) → str
+    Replaces the old "\n\n".join(...) formatting. Labels each sub-answer:
+      [PRIMARY — rule primarily from this] Sub-question (confidence=0.63): ...
+      [SUPPORTING] Sub-question (confidence=0.21): ...
+    Appends the partial_info note (if any) as "Context note: ..."
+
+  System prompt updated with PRIORITY clause:
+    "Rule primarily from the [PRIMARY] sub-answer. Use SUPPORTING sub-answers only
+     if their content is consistent and non-contradictory with the primary."
+  This stops the LLM from averaging all sub-answers equally and ensures the
+  highest-evidence answer drives the ruling.
+
+Change 3 — Direct reasoning for threshold questions (ruling system prompt + reasoning_steps field)
+  System prompt updated with REASONING STEP clause:
+    "If the PRIMARY sub-answer retrieved the relevant numeric values (DRV, percentage
+     threshold, serving size limit), derive the answer mathematically and state the
+     calculation in reasoning_steps. Example: 'Protein DRV=50g. Excellent source
+     threshold=20% DV=10g. 20g>10g → YES.' Only compute from values explicitly
+     present in the sub-answers. Do NOT invent numbers. If no calculation is needed,
+     return reasoning_steps as []."
+  This is a conditional instruction — the LLM only fires the reasoning step when
+  numeric values are present. When the question is qualitative, reasoning_steps==[].
+
+  JSON schema extended with "reasoning_steps": [] field.
+  final_answer now includes: "reasoning_steps": ruling_result.get("reasoning_steps", [])
+  _build_query_response now renders reasoning_steps between ruling_summary and requirements:
+    **Reasoning:**
+    - Protein DRV = 50g. Excellent source threshold = 20% DV = 10g. 20g > 10g → YES.
+  max_tokens raised from 1024 → 1200 to accommodate reasoning output.
+
+Change 4 — Partial information note (_build_partial_info_note)
+  New helper: _build_partial_info_note(all_answers, resolved_answers) → str
+    Computes:
+      total    = len(all_answers)          # includes skipped
+      answered = len(resolved_answers)     # non-skipped
+      reliable = count(confidence >= 0.3)  # strong sub-answers
+    Generates human-readable note if any gap exists:
+      "1 of 3 sub-question(s) found no supporting evidence; 1 of 2 answered
+       sub-question(s) had low retrieval confidence (<30%). Ruling is based on
+       partial information."
+    Returns "" if all sub-questions were answered with acceptable confidence.
+
+  partial_info is passed to _build_ruling_user_content so the LLM receives it as
+  context and can reference it in ruling_summary.
+
+  final_answer now includes: "partial_information_note": partial_info or None
+  _build_query_response appends it as an italic footnote at the bottom of the
+  answer text: *1 of 3 sub-question(s) found no supporting evidence...*
+
+  Key design decision — no automatic confidence downgrade:
+    The confidence level is derived from strong sub-answers only (Change 1). If the
+    one reliable sub-answer scored 0.6, the level is MEDIUM regardless of how many
+    sub-questions were skipped. The partial_information_note is an informational flag,
+    not a penalty. Downgrading solely because sub-questions were missing would punish
+    atomic queries that decompose into 1 focused sub-question and answer it well.

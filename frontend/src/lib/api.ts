@@ -62,9 +62,13 @@ export async function queryComplianceStream(
 
       onEvent(event);
 
-      // The conflict_detector and insufficient_coverage nodes carry the full answer.
+      // final_synthesizer and clarification_response carry the full answer payload.
       if (
-        (event.event === "conflict_detector" || event.event === "insufficient_coverage") &&
+        (event.event === "final_synthesizer" ||
+          event.event === "clarification_response" ||
+          // legacy node names kept for backward compatibility
+          event.event === "conflict_detector" ||
+          event.event === "insufficient_coverage") &&
         event.answer
       ) {
         finalResponse = event.answer;
