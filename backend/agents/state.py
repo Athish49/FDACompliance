@@ -9,6 +9,7 @@ class ComplianceState(TypedDict, total=False):
     # ── Input ──────────────────────────────────────────────────────────────────
     query: str
     session_id: str
+    pipeline_started_at: float  # unix timestamp set by query_analyzer_node
 
     # ── Stage 1: Query Analysis ────────────────────────────────────────────────
     analyzed_query: dict       # intent_type, entities, is_multi_part, explicit_refs

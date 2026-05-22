@@ -240,7 +240,7 @@ export default function LandingPage() {
                 disabled={!hasQuery || isSubmitting}
                 className={`w-8 h-8 rounded-xl flex items-center justify-center shrink-0 transition-all duration-200 ${
                   hasQuery
-                    ? "bg-bark-900 text-white hover:bg-bark-800 shadow-sm"
+                    ? "bg-bark-800 text-white hover:bg-bark-900 shadow-sm"
                     : "bg-sand-200 text-bark-700/30 cursor-default"
                 }`}
               >
@@ -349,7 +349,7 @@ export default function LandingPage() {
             </Link>
             <Link
               href="/chat"
-              className="inline-flex items-center gap-2 px-7 py-3 bg-bark-900 text-white font-medium rounded-2xl hover:bg-bark-800 transition-colors"
+              className="inline-flex items-center gap-2 px-7 py-3 bg-bark-800 text-white font-medium rounded-2xl hover:bg-bark-900 transition-colors"
             >
               Chat with us
             </Link>
@@ -556,7 +556,7 @@ export default function LandingPage() {
           >
             <Link
               href="/solutions"
-              className="inline-flex items-center gap-2 px-6 py-3 bg-bark-900 text-white text-sm font-medium rounded-2xl hover:bg-bark-800 transition-colors"
+              className="inline-flex items-center gap-2 px-6 py-3 bg-bark-800 text-white text-sm font-medium rounded-2xl hover:bg-bark-900 transition-colors"
             >
               See how it works
               <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">

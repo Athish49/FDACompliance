@@ -9,8 +9,9 @@ import Navbar from "@/components/Navbar";
 import ChatMessage from "@/components/ChatMessage";
 import ChatInput from "@/components/ChatInput";
 import SkeletonMessage from "@/components/SkeletonMessage";
+import AnalysisReport from "@/components/AnalysisReport";
 import { queryComplianceStream } from "@/lib/api";
-import type { ChatMessage as ChatMessageType, SSEEvent } from "@/types";
+import type { ChatMessage as ChatMessageType, SSEEvent, SubQuestionTrace } from "@/types";
 
 const SUGGESTIONS = [
   "What are the labeling requirements for allergen declarations?",
@@ -74,6 +75,7 @@ function ChatPageInner() {
   const [messages, setMessages] = useState<ChatMessageType[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [loadingStage, setLoadingStage] = useState<string>("");
+  const [reportMessage, setReportMessage] = useState<ChatMessageType | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const autoSentRef = useRef(false);
 
@@ -108,20 +110,36 @@ function ChatPageInner() {
     setIsLoading(true);
     setLoadingStage("Planning query…");
 
+    const subQuestionTrace: SubQuestionTrace[] = [];
+
     try {
       const response = await queryComplianceStream(text, (event: SSEEvent) => {
         setLoadingStage(stageLabelFor(event));
+        if (event.event === "process_sub_question" && event.sub_question_text) {
+          subQuestionTrace.push({
+            text: event.sub_question_text,
+            crag_verdict: event.crag_verdict ?? "",
+            confidence: event.confidence ?? 0,
+            citation_count: event.citation_count ?? 0,
+          });
+        }
       });
 
       const assistantMsg: ChatMessageType = {
         id: (Date.now() + 1).toString(),
         role: "assistant",
-        content: response.answer,
+        content: response.structured_answer?.ruling_summary || response.answer,
         citations: response.citations,
         disclaimer: response.disclaimer,
         confidence_score: response.confidence_score,
         verification_passed: response.verification_passed,
         conflicts_detected: response.conflicts_detected,
+        conflict_details: response.conflict_details,
+        domain_mismatches: response.domain_mismatches,
+        retrieved_sections: response.retrieved_sections,
+        structured_answer: response.structured_answer,
+        sub_question_trace: subQuestionTrace.length > 0 ? subQuestionTrace : undefined,
+        evidence_analysis: response.evidence_analysis,
         timestamp: new Date(),
       };
       setMessages((prev) => [...prev, assistantMsg]);
@@ -142,6 +160,7 @@ function ChatPageInner() {
 
   const handleClear = () => {
     setMessages([]);
+    setReportMessage(null);
     autoSentRef.current = false;
   };
   const hasMessages = messages.length > 0;
@@ -149,6 +168,16 @@ function ChatPageInner() {
   return (
     <>
       <Navbar />
+
+      {/* Analysis Report overlay — rendered at page level to avoid stacking context trap */}
+      <AnimatePresence>
+        {reportMessage && (
+          <AnalysisReport
+            message={reportMessage}
+            onClose={() => setReportMessage(null)}
+          />
+        )}
+      </AnimatePresence>
 
       <div className="flex flex-col h-screen pt-[calc(2rem+56px)]">
         {/* Sub-header */}
@@ -215,7 +244,7 @@ function ChatPageInner() {
                   className="space-y-5 pb-4"
                 >
                   {messages.map((msg) => (
-                    <ChatMessage key={msg.id} message={msg} />
+                    <ChatMessage key={msg.id} message={msg} onOpenReport={setReportMessage} />
                   ))}
                   {isLoading && <SkeletonMessage stage={loadingStage} />}
                 </motion.div>

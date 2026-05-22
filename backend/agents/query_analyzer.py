@@ -6,6 +6,7 @@ before decomposition begins so the pipeline can request clarification early.
 from __future__ import annotations
 
 import logging
+import time
 
 from agents.llm import llm_completion_json, parse_llm_json
 from agents.session_logger import get_session
@@ -87,4 +88,5 @@ def query_analyzer_node(state: ComplianceState) -> dict:
         "analyzed_query": result,
         "needs_clarification": result["needs_clarification"],
         "clarification_question": result["clarification_question"],
+        "pipeline_started_at": time.time(),
     }

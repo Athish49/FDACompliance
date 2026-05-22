@@ -998,7 +998,15 @@ def run_sub_question_pipeline(
         "confidence": confidence,
         "crag_verdict": crag_verdict,
         "caveat_flag": caveat_flag,
-        "chunks_used": [{"chunk_id": c.get("chunk_id"), "cfr_citation": c.get("cfr_citation"), "text": c.get("text", "")[:300]} for c in chunks_used],
+        "chunks_used": [
+            {
+                "chunk_id": c.get("chunk_id"),
+                "cfr_citation": c.get("cfr_citation"),
+                "text": c.get("text", "")[:300],
+                "reranker_score": c.get("reranker_score", 0.0),
+            }
+            for c in chunks_used
+        ],
         "cross_refs_resolved": cross_refs_resolved,
         "claim_verification": claim_verification,
         "unverified_claims": unverified_claims,

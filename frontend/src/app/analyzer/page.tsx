@@ -217,7 +217,7 @@ export default function AnalyzerPage() {
                   onClick={handleAnalyze}
                   disabled={!file}
                   whileTap={file ? { scale: 0.98 } : {}}
-                  className="w-full mt-6 py-3.5 bg-bark-900 text-white font-medium rounded-2xl disabled:opacity-30 disabled:cursor-not-allowed hover:bg-bark-800 transition-colors"
+                  className="w-full mt-6 py-3.5 bg-bark-800 text-white font-medium rounded-2xl disabled:opacity-30 disabled:cursor-not-allowed hover:bg-bark-900 transition-colors"
                 >
                   Analyze document
                 </motion.button>
@@ -391,7 +391,7 @@ export default function AnalyzerPage() {
                         <button
                           onClick={handleFollowUp}
                           disabled={!followUpInput.trim() || isFollowUpLoading}
-                          className="w-8 h-8 rounded-xl bg-bark-900 text-white flex items-center justify-center shrink-0 hover:bg-bark-800 disabled:opacity-25 transition-colors"
+                          className="w-8 h-8 rounded-xl bg-bark-800 text-white flex items-center justify-center shrink-0 hover:bg-bark-900 disabled:opacity-25 transition-colors"
                         >
                           <ArrowUp className="w-4 h-4" />
                         </button>

@@ -1,11 +1,23 @@
 @import "tailwindcss";
 
+/*
+ * ─── GLOBAL COLOUR PALETTE ──────────────────────────────────────────────────
+ * Single source of truth. Change a value here and it propagates everywhere
+ * because all components use the Tailwind class names (bg-bark-900, text-bark-700,
+ * etc.) which map directly to these CSS variables.
+ *
+ * Interactive accent convention:
+ *   default state  → bark-700  (#5a1a28) — the lighter brown
+ *   hover / active → bark-900  (#280310) — the darker brown
+ *   headings/text  → bark-900  (#280310) — always dark for legibility
+ * ────────────────────────────────────────────────────────────────────────────
+ */
 @theme inline {
-  /* Bark — primary text & dark CTA */
-  --color-bark-900: #280310;
-  --color-bark-800: #3d0a18;
-  --color-bark-700: #5a1a28;
-  --color-bark-600: #7a2e3e;
+  /* Bark — primary text, headings, and interactive elements */
+  --color-bark-900: #280310;   /* darkest  — headings, hover states         */
+  --color-bark-800: #3d0a18;   /* dark     — (reserved, prefer 900 or 700)  */
+  --color-bark-700: #5a1a28;   /* medium   — default button / badge fill     */
+  --color-bark-600: #7a2e3e;   /* light    — (reserved, prefer 700)          */
 
   /* Sand — backgrounds */
   --color-sand-25:  #fefcf9;

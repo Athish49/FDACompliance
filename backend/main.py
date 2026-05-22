@@ -336,9 +336,12 @@ class QueryResponse(BaseModel):
     confidence_score: float = 0.0
     conflicts_detected: bool = False
     conflict_details: list[dict] = []
+    domain_mismatches: list[dict] = []
     disclaimer: str = ""
     retrieved_sections: list[str] = []
     verification_passed: bool = False
+    structured_answer: dict = {}
+    evidence_analysis: dict = {}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -456,6 +459,11 @@ async def query_compliance_stream(request: QueryRequest):
                     payload["crag_verdict"] = sa.get("crag_verdict", "")
                     payload["confidence"] = sa.get("confidence", 0.0)
                     payload["citation_count"] = len(sa.get("citations", []))
+                    payload["cited_sections"] = list({
+                        c.get("cfr_citation", "")
+                        for c in sa.get("chunks_used", [])
+                        if c.get("cfr_citation")
+                    })
             elif node_name == "consistency_detector":
                 payload["conflict_count"] = len(state_up.get("unresolved_conflicts", []))
             elif node_name == "final_synthesizer":
